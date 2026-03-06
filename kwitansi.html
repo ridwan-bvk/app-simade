@@ -1,0 +1,33 @@
+<div style="font-family:Arial,sans-serif;font-size:13px;color:#222;max-width:700px;margin:0 auto;border:1px solid #ddd;padding:16px;">
+  <h2 style="text-align:center;margin:0 0 14px;">KWITANSI</h2>
+
+  <table style="width:100%;margin-bottom:12px;">
+    <tr><td style="width:140px;">No Kwitansi</td><td>: {{invoice_no}}</td></tr>
+    <tr><td>Tanggal</td><td>: {{transaction_at}}</td></tr>
+    <tr><td>Sudah terima dari</td><td>: {{customer_name}}</td></tr>
+    <tr><td>Untuk pembayaran</td><td>: Pembelian produk di {{store_name}}</td></tr>
+  </table>
+
+  <div style="border:1px dashed #aaa;padding:10px;margin-bottom:12px;">
+    {{items_rows}}
+  </div>
+
+  <table style="width:100%;">
+    <tr><td style="width:140px;">Total</td><td>: {{total}}</td></tr>
+    <tr><td>Terbilang</td><td>: .......................................................</td></tr>
+    <tr><td>Status</td><td>: {{status}}</td></tr>
+  </table>
+
+  <div style="display:flex;justify-content:space-between;margin-top:30px;">
+    <div>
+      <div>{{store_name}}</div>
+      <div>{{store_address}}</div>
+      <div>Telp: {{store_phone}}</div>
+    </div>
+    <div style="text-align:center;min-width:180px;">
+      <div>Penerima,</div>
+      <div style="height:60px;"></div>
+      <div>(________________)</div>
+    </div>
+  </div>
+</div>
