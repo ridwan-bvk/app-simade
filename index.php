@@ -485,10 +485,15 @@ foreach ($templateRows as $templateRow) {
     <aside class="cart-section">
         <!-- Cart Header -->
         <header class="cart-header">
-            <h2>Keranjang</h2>
-            <button class="btn-clear-cart" id="clearCartBtn" title="Kosongkan Keranjang">
-                <i data-feather="trash-2"></i>
-            </button>
+            <h2>Keranjang <span style="font-size:11px;color:var(--text-muted);font-weight:600;">F9 transaksi baru</span></h2>
+            <div style="display:flex;gap:8px;align-items:center;">
+                <button class="btn-secondary" id="newTransactionBtn" title="Mulai Transaksi Baru" style="padding:8px 10px;font-size:12px;">
+                    Baru
+                </button>
+                <button class="btn-clear-cart" id="clearCartBtn" title="Kosongkan Keranjang">
+                    <i data-feather="trash-2"></i>
+                </button>
+            </div>
         </header>
 
         <!-- Customer Name -->
@@ -537,6 +542,7 @@ foreach ($templateRows as $templateRow) {
                 <button class="btn-save-draft" id="saveDraftBtn" disabled>
                     <i data-feather="bookmark" style="width:15px;height:15px;"></i>
                     Simpan Belum Bayar
+                    <span style="font-size:11px;padding:3px 6px;border-radius:6px;border:1px solid #fdba74;background:#fff;line-height:1;">Ctrl+S</span>
                 </button>
                 <button class="btn-checkout" id="checkoutBtn" disabled>
                     <div class="checkout-btn-content">

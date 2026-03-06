@@ -2,4 +2,7 @@
 *.log
 .idea/
 .vscode/
-
+backup_exports/
+backup_full_*.sql
+backup_transactions_*.sql
+backup_transactions_*.csv

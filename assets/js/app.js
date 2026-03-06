@@ -52,6 +52,7 @@ let activeCategory = 'Semua';
 let activeSearch = '';
 let currentDraftId = 0;
 let todayTransactions = [];
+let saveDraftByShortcut = false;
 
 // --- DOM Elements ---
 const productsGrid = document.getElementById('productsGrid');
@@ -66,6 +67,7 @@ const saveDraftBtn = document.getElementById('saveDraftBtn');
 const printReceiptBtn = document.getElementById('printReceiptBtn');
 const searchInput = document.getElementById('searchInput');
 const clearCartBtn = document.getElementById('clearCartBtn');
+const newTransactionBtn = document.getElementById('newTransactionBtn');
 const customerNameInput = document.getElementById('customerName');
 const printArea = document.getElementById('printArea');
 const categoriesWrapper = document.getElementById('categoriesWrapper');
@@ -577,14 +579,22 @@ window.removeFromCart = (index) => {
 };
 
 clearCartBtn.addEventListener('click', () => {
-    if (cart.length > 0 && confirm('Kosongkan keranjang belanja?')) {
-        cart = [];
-        currentDraftId = 0;
-        paymentInput.value = '';
-        if (customerNameInput) customerNameInput.value = '';
-        renderCart();
+    if (cart.length > 0 && confirm('Mulai transaksi baru? Keranjang saat ini akan dikosongkan.')) {
+        startNewTransaction();
     }
 });
+
+if (newTransactionBtn) {
+    newTransactionBtn.addEventListener('click', () => {
+        if (cart.length === 0) {
+            startNewTransaction();
+            return;
+        }
+        if (confirm('Mulai transaksi baru? Keranjang saat ini akan dikosongkan.')) {
+            startNewTransaction();
+        }
+    });
+}
 
 // --- Checkout & Print ---
 function generateReceiptHTML(total, paid, change) {
@@ -718,14 +728,37 @@ saveDraftBtn.addEventListener('click', async () => {
     try {
         const { result } = await submitTransaction('save_draft');
         currentDraftId = Number(result.transaction_id || 0);
-        showToast('Transaksi belum bayar berhasil disimpan.', 'success');
+        const draftNo = result.invoice_no || `Draft #${currentDraftId}`;
+        showToast(`Berhasil simpan transaksi belum bayar (${draftNo}).`, 'success');
+        if (saveDraftByShortcut) {
+            startNewTransaction();
+        }
     } catch (err) {
         showToast(`Gagal simpan draft: ${err.message}`, 'error');
     } finally {
+        saveDraftByShortcut = false;
         saveDraftBtn.innerHTML = original;
         updateSummary();
     }
 });
+
+function triggerSaveDraftShortcut() {
+    if (!saveDraftBtn || saveDraftBtn.disabled) {
+        showToast('Keranjang kosong. Tambahkan item dulu untuk simpan belum bayar.', 'info');
+        return;
+    }
+    saveDraftByShortcut = true;
+    saveDraftBtn.click();
+}
+
+function startNewTransaction() {
+    cart = [];
+    currentDraftId = 0;
+    paymentInput.value = '';
+    if (customerNameInput) customerNameInput.value = '';
+    renderCart();
+    showToast('Keranjang baru siap. Silakan input transaksi baru.', 'success');
+}
 
 window.openReceiptModal = () => {
     if (cart.length === 0) return;
@@ -775,6 +808,22 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'F2') {
         e.preventDefault();
         searchInput.focus();
+    }
+    if ((e.ctrlKey || e.metaKey) && String(e.key || '').toLowerCase() === 's') {
+        e.preventDefault();
+        triggerSaveDraftShortcut();
+        return;
+    }
+    if (e.key === 'F9') {
+        e.preventDefault();
+        if (cart.length === 0) {
+            startNewTransaction();
+            return;
+        }
+        if (confirm('Mulai transaksi baru? Keranjang saat ini akan dikosongkan.')) {
+            startNewTransaction();
+        }
+        return;
     }
     if (e.key === 'Enter') {
         if (document.activeElement === searchInput) {

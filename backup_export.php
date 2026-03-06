@@ -5,6 +5,21 @@ require_once 'config/database.php';
 
 $pdo = get_db();
 
+function ensure_backup_dir(): string
+{
+    $dir = __DIR__ . DIRECTORY_SEPARATOR . 'backup_exports';
+    if (!is_dir($dir)) {
+        mkdir($dir, 0777, true);
+    }
+    return $dir;
+}
+
+function save_backup_file(string $filename, string $content): void
+{
+    $dir = ensure_backup_dir();
+    file_put_contents($dir . DIRECTORY_SEPARATOR . $filename, $content);
+}
+
 function ensure_transaction_tables(PDO $pdo): void
 {
     $pdo->exec(
@@ -99,8 +114,11 @@ if ($type === 'full_sql') {
     }
     $sql .= "SET FOREIGN_KEY_CHECKS=1;\n";
 
+    $filename = 'backup_full_' . date('Ymd_His') . '.sql';
+    save_backup_file($filename, $sql);
+
     header('Content-Type: application/sql; charset=utf-8');
-    header('Content-Disposition: attachment; filename="backup_full_' . date('Ymd_His') . '.sql"');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
     echo $sql;
     exit;
 }
@@ -114,8 +132,11 @@ if ($type === 'transactions_sql') {
     }
     $sql .= "SET FOREIGN_KEY_CHECKS=1;\n";
 
+    $filename = 'backup_transactions_' . date('Ymd_His') . '.sql';
+    save_backup_file($filename, $sql);
+
     header('Content-Type: application/sql; charset=utf-8');
-    header('Content-Disposition: attachment; filename="backup_transactions_' . date('Ymd_His') . '.sql"');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
     echo $sql;
     exit;
 }
@@ -139,10 +160,9 @@ if ($type === 'transactions_csv') {
             ORDER BY t.id DESC, i.id ASC';
     $rows = $pdo->query($sql)->fetchAll(PDO::FETCH_ASSOC);
 
-    header('Content-Type: text/csv; charset=utf-8');
-    header('Content-Disposition: attachment; filename="backup_transactions_' . date('Ymd_His') . '.csv"');
-
-    $fp = fopen('php://output', 'w');
+    $filename = 'backup_transactions_' . date('Ymd_His') . '.csv';
+    $tmp = fopen('php://temp', 'w+');
+    $fp = $tmp;
     fputcsv($fp, [
         'invoice_no', 'transaction_at', 'customer_name', 'product_code',
         'product_name', 'variant_name', 'price', 'qty', 'subtotal', 'total',
@@ -151,7 +171,18 @@ if ($type === 'transactions_csv') {
     foreach ($rows as $row) {
         fputcsv($fp, $row);
     }
-    fclose($fp);
+    rewind($tmp);
+    $csvContent = stream_get_contents($tmp);
+    fclose($tmp);
+
+    if ($csvContent === false) {
+        $csvContent = '';
+    }
+    save_backup_file($filename, $csvContent);
+
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+    echo $csvContent;
     exit;
 }
 

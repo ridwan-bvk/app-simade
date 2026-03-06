@@ -225,8 +225,16 @@ try {
         }
 
         save_items($pdo, $transactionId, $items);
+        $invStmt = $pdo->prepare('SELECT invoice_no FROM sales_transactions WHERE id = :id');
+        $invStmt->execute([':id' => $transactionId]);
+        $invoiceNo = (string)$invStmt->fetchColumn();
         $pdo->commit();
-        echo json_encode(['success' => true, 'transaction_id' => $transactionId, 'status' => 'pending']);
+        echo json_encode([
+            'success' => true,
+            'transaction_id' => $transactionId,
+            'invoice_no' => $invoiceNo,
+            'status' => 'pending',
+        ]);
         exit;
     }
 
