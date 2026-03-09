@@ -29,6 +29,28 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST' || !isset($_POST['action'])) {
 
 $pdo    = get_db();
 $action = $_POST['action'];
+$hasUnitId = $pdo->query("SHOW COLUMNS FROM products LIKE 'unit_id'")->fetch(PDO::FETCH_ASSOC);
+if (!$hasUnitId) {
+    $pdo->exec('ALTER TABLE products ADD COLUMN unit_id INT UNSIGNED NULL AFTER kategori');
+}
+$hasUnitBaseQty = $pdo->query("SHOW COLUMNS FROM products LIKE 'unit_base_qty'")->fetch(PDO::FETCH_ASSOC);
+if (!$hasUnitBaseQty) {
+    $pdo->exec('ALTER TABLE products ADD COLUMN unit_base_qty DECIMAL(15,4) NOT NULL DEFAULT 1 AFTER unit_id');
+}
+$hasSupplierId = $pdo->query("SHOW COLUMNS FROM products LIKE 'supplier_id'")->fetch(PDO::FETCH_ASSOC);
+if (!$hasSupplierId) {
+    $pdo->exec('ALTER TABLE products ADD COLUMN supplier_id INT UNSIGNED NULL AFTER unit_base_qty');
+}
+
+// Check and Add new columns for flags
+$hasIsTransaction = $pdo->query("SHOW COLUMNS FROM products LIKE 'is_transaction_product'")->fetch(PDO::FETCH_ASSOC);
+if (!$hasIsTransaction) {
+    $pdo->exec('ALTER TABLE products ADD COLUMN is_transaction_product TINYINT(1) NOT NULL DEFAULT 1 AFTER supplier_id');
+}
+$hasIsPurchase = $pdo->query("SHOW COLUMNS FROM products LIKE 'is_purchase_product'")->fetch(PDO::FETCH_ASSOC);
+if (!$hasIsPurchase) {
+    $pdo->exec('ALTER TABLE products ADD COLUMN is_purchase_product TINYINT(1) NOT NULL DEFAULT 1 AFTER is_transaction_product');
+}
 
 function normalizeVariantPrices($rawPrices) {
     if (!is_array($rawPrices)) {
@@ -88,6 +110,15 @@ function saveVariantPrices($pdo, $productId, $prices) {
 if ($action === 'create') {
     try {
         $variantPrices = normalizeVariantPrices($_POST['variant_prices'] ?? []);
+        $unitId = (int)($_POST['unit_id'] ?? 0);
+        $unitBaseQty = (float)($_POST['unit_base_qty'] ?? 1);
+        $supplierId = (int)($_POST['supplier_id'] ?? 0);
+        $isTransaction = isset($_POST['is_transaction_product']) ? 1 : 0;
+        $isPurchase = isset($_POST['is_purchase_product']) ? 1 : 0;
+
+        if ($unitBaseQty <= 0) {
+            $unitBaseQty = 1;
+        }
         $hargaJualUtama = resolveMainSellingPrice(
             $_POST['harga_jual'] ?? 0,
             $variantPrices,
@@ -95,13 +126,18 @@ if ($action === 'create') {
         );
 
         $pdo->beginTransaction();
-        $sql = 'INSERT INTO products (kode_barang, nama_barang, kategori, harga_beli, harga_jual, stok)
-                VALUES (:kode_barang, :nama_barang, :kategori, :harga_beli, :harga_jual, :stok)';
+        $sql = 'INSERT INTO products (kode_barang, nama_barang, kategori, unit_id, unit_base_qty, supplier_id, is_transaction_product, is_purchase_product, harga_beli, harga_jual, stok)
+                VALUES (:kode_barang, :nama_barang, :kategori, :unit_id, :unit_base_qty, :supplier_id, :is_transaction, :is_purchase, :harga_beli, :harga_jual, :stok)';
         $stmt = $pdo->prepare($sql);
         $stmt->execute([
             ':kode_barang' => trim($_POST['kode_barang']),
             ':nama_barang' => trim($_POST['nama_barang']),
             ':kategori'    => $_POST['kategori'],
+            ':unit_id'     => $unitId > 0 ? $unitId : null,
+            ':unit_base_qty' => $unitBaseQty,
+            ':supplier_id' => $supplierId > 0 ? $supplierId : null,
+            ':is_transaction' => $isTransaction,
+            ':is_purchase' => $isPurchase,
             ':harga_beli'  => (float)$_POST['harga_beli'],
             ':harga_jual'  => $hargaJualUtama,
             ':stok'        => (int)$_POST['stok'],
@@ -134,6 +170,15 @@ if ($action === 'update') {
     }
     try {
         $variantPrices = normalizeVariantPrices($_POST['variant_prices'] ?? []);
+        $unitId = (int)($_POST['unit_id'] ?? 0);
+        $unitBaseQty = (float)($_POST['unit_base_qty'] ?? 1);
+        $supplierId = (int)($_POST['supplier_id'] ?? 0);
+        $isTransaction = isset($_POST['is_transaction_product']) ? 1 : 0;
+        $isPurchase = isset($_POST['is_purchase_product']) ? 1 : 0;
+
+        if ($unitBaseQty <= 0) {
+            $unitBaseQty = 1;
+        }
         $hargaJualUtama = resolveMainSellingPrice(
             $_POST['harga_jual'] ?? 0,
             $variantPrices,
@@ -145,6 +190,11 @@ if ($action === 'update') {
                 SET kode_barang = :kode_barang,
                     nama_barang = :nama_barang,
                     kategori    = :kategori,
+                    unit_id     = :unit_id,
+                    unit_base_qty = :unit_base_qty,
+                    supplier_id = :supplier_id,
+                    is_transaction_product = :is_transaction,
+                    is_purchase_product = :is_purchase,
                     harga_beli  = :harga_beli,
                     harga_jual  = :harga_jual,
                     stok        = :stok
@@ -154,6 +204,11 @@ if ($action === 'update') {
             ':kode_barang' => trim($_POST['kode_barang']),
             ':nama_barang' => trim($_POST['nama_barang']),
             ':kategori'    => $_POST['kategori'],
+            ':unit_id'     => $unitId > 0 ? $unitId : null,
+            ':unit_base_qty' => $unitBaseQty,
+            ':supplier_id' => $supplierId > 0 ? $supplierId : null,
+            ':is_transaction' => $isTransaction,
+            ':is_purchase' => $isPurchase,
             ':harga_beli'  => (float)$_POST['harga_beli'],
             ':harga_jual'  => $hargaJualUtama,
             ':stok'        => (int)$_POST['stok'],

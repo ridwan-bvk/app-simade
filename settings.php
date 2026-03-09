@@ -26,6 +26,31 @@ $pdo->exec(
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
 );
+$pdo->exec(
+    'CREATE TABLE IF NOT EXISTS master_units (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        unit_code VARCHAR(24) NOT NULL UNIQUE,
+        unit_name VARCHAR(80) NOT NULL,
+        unit_symbol VARCHAR(24) NOT NULL,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+);
+$pdo->exec(
+    'CREATE TABLE IF NOT EXISTS master_suppliers (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        supplier_code VARCHAR(24) NOT NULL UNIQUE,
+        supplier_name VARCHAR(120) NOT NULL,
+        contact_name VARCHAR(120) NULL,
+        phone VARCHAR(40) NULL,
+        address TEXT NULL,
+        notes TEXT NULL,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+);
 
 function save_setting(PDO $pdo, string $key, string $value): void
 {
@@ -149,6 +174,187 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     exit;
 }
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'unit_create') {
+    $code = strtolower(trim((string)($_POST['unit_code'] ?? '')));
+    $name = trim((string)($_POST['unit_name'] ?? ''));
+    $symbol = trim((string)($_POST['unit_symbol'] ?? ''));
+    $isActive = isset($_POST['unit_is_active']) ? 1 : 0;
+    if ($code === '' || $name === '' || $symbol === '') {
+        header('Location: settings.php?msg=unit_error_required');
+        exit;
+    }
+
+    try {
+        $stmt = $pdo->prepare(
+            'INSERT INTO master_units (unit_code, unit_name, unit_symbol, is_active)
+             VALUES (:code, :name, :symbol, :active)'
+        );
+        $stmt->execute([
+            ':code' => $code,
+            ':name' => $name,
+            ':symbol' => $symbol,
+            ':active' => $isActive,
+        ]);
+        header('Location: settings.php?msg=unit_saved');
+    } catch (PDOException $e) {
+        if ((string)$e->getCode() === '23000') {
+            header('Location: settings.php?msg=unit_error_duplicate');
+        } else {
+            header('Location: settings.php?msg=unit_error');
+        }
+    }
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'unit_update') {
+    $id = (int)($_POST['unit_id'] ?? 0);
+    $code = strtolower(trim((string)($_POST['unit_code'] ?? '')));
+    $name = trim((string)($_POST['unit_name'] ?? ''));
+    $symbol = trim((string)($_POST['unit_symbol'] ?? ''));
+    $isActive = isset($_POST['unit_is_active']) ? 1 : 0;
+    if ($id <= 0 || $code === '' || $name === '' || $symbol === '') {
+        header('Location: settings.php?msg=unit_error_required');
+        exit;
+    }
+
+    try {
+        $stmt = $pdo->prepare(
+            'UPDATE master_units
+             SET unit_code = :code, unit_name = :name, unit_symbol = :symbol, is_active = :active
+             WHERE id = :id'
+        );
+        $stmt->execute([
+            ':id' => $id,
+            ':code' => $code,
+            ':name' => $name,
+            ':symbol' => $symbol,
+            ':active' => $isActive,
+        ]);
+        header('Location: settings.php?msg=unit_saved');
+    } catch (PDOException $e) {
+        if ((string)$e->getCode() === '23000') {
+            header('Location: settings.php?msg=unit_error_duplicate');
+        } else {
+            header('Location: settings.php?msg=unit_error');
+        }
+    }
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'unit_delete') {
+    $id = (int)($_POST['unit_id'] ?? 0);
+    if ($id <= 0) {
+        header('Location: settings.php?msg=unit_error');
+        exit;
+    }
+
+    try {
+        $stmt = $pdo->prepare('DELETE FROM master_units WHERE id = :id');
+        $stmt->execute([':id' => $id]);
+        header('Location: settings.php?msg=unit_deleted');
+    } catch (PDOException $e) {
+        header('Location: settings.php?msg=unit_error_delete');
+    }
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'supplier_create') {
+    $code = strtoupper(trim((string)($_POST['supplier_code'] ?? '')));
+    $name = trim((string)($_POST['supplier_name'] ?? ''));
+    $contactName = trim((string)($_POST['contact_name'] ?? ''));
+    $phone = trim((string)($_POST['supplier_phone'] ?? ''));
+    $address = trim((string)($_POST['supplier_address'] ?? ''));
+    $notes = trim((string)($_POST['supplier_notes'] ?? ''));
+    $isActive = isset($_POST['supplier_is_active']) ? 1 : 0;
+    if ($code === '' || $name === '') {
+        header('Location: settings.php?msg=supplier_error_required');
+        exit;
+    }
+
+    try {
+        $stmt = $pdo->prepare(
+            'INSERT INTO master_suppliers (supplier_code, supplier_name, contact_name, phone, address, notes, is_active)
+             VALUES (:code, :name, :contact_name, :phone, :address, :notes, :active)'
+        );
+        $stmt->execute([
+            ':code' => $code,
+            ':name' => $name,
+            ':contact_name' => $contactName !== '' ? $contactName : null,
+            ':phone' => $phone !== '' ? $phone : null,
+            ':address' => $address !== '' ? $address : null,
+            ':notes' => $notes !== '' ? $notes : null,
+            ':active' => $isActive,
+        ]);
+        header('Location: settings.php?msg=supplier_saved');
+    } catch (PDOException $e) {
+        if ((string)$e->getCode() === '23000') {
+            header('Location: settings.php?msg=supplier_error_duplicate');
+        } else {
+            header('Location: settings.php?msg=supplier_error');
+        }
+    }
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'supplier_update') {
+    $id = (int)($_POST['supplier_id'] ?? 0);
+    $code = strtoupper(trim((string)($_POST['supplier_code'] ?? '')));
+    $name = trim((string)($_POST['supplier_name'] ?? ''));
+    $contactName = trim((string)($_POST['contact_name'] ?? ''));
+    $phone = trim((string)($_POST['supplier_phone'] ?? ''));
+    $address = trim((string)($_POST['supplier_address'] ?? ''));
+    $notes = trim((string)($_POST['supplier_notes'] ?? ''));
+    $isActive = isset($_POST['supplier_is_active']) ? 1 : 0;
+    if ($id <= 0 || $code === '' || $name === '') {
+        header('Location: settings.php?msg=supplier_error_required');
+        exit;
+    }
+
+    try {
+        $stmt = $pdo->prepare(
+            'UPDATE master_suppliers
+             SET supplier_code = :code, supplier_name = :name, contact_name = :contact_name, phone = :phone,
+                 address = :address, notes = :notes, is_active = :active
+             WHERE id = :id'
+        );
+        $stmt->execute([
+            ':id' => $id,
+            ':code' => $code,
+            ':name' => $name,
+            ':contact_name' => $contactName !== '' ? $contactName : null,
+            ':phone' => $phone !== '' ? $phone : null,
+            ':address' => $address !== '' ? $address : null,
+            ':notes' => $notes !== '' ? $notes : null,
+            ':active' => $isActive,
+        ]);
+        header('Location: settings.php?msg=supplier_saved');
+    } catch (PDOException $e) {
+        if ((string)$e->getCode() === '23000') {
+            header('Location: settings.php?msg=supplier_error_duplicate');
+        } else {
+            header('Location: settings.php?msg=supplier_error');
+        }
+    }
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'supplier_delete') {
+    $id = (int)($_POST['supplier_id'] ?? 0);
+    if ($id <= 0) {
+        header('Location: settings.php?msg=supplier_error');
+        exit;
+    }
+
+    try {
+        $stmt = $pdo->prepare('DELETE FROM master_suppliers WHERE id = :id');
+        $stmt->execute([':id' => $id]);
+        header('Location: settings.php?msg=supplier_deleted');
+    } catch (PDOException $e) {
+        header('Location: settings.php?msg=supplier_error_delete');
+    }
+    exit;
+}
+
 $current = $defaults;
 $rows = $pdo->query("SELECT setting_key, setting_value FROM app_settings WHERE setting_key LIKE 'receipt_%'")->fetchAll(PDO::FETCH_ASSOC);
 foreach ($rows as $row) {
@@ -169,6 +375,9 @@ foreach ($templateRows as $templateRow) {
         $printTemplates[$type] = (string)$templateRow['template_content'];
     }
 }
+
+$units = $pdo->query('SELECT id, unit_code, unit_name, unit_symbol, is_active FROM master_units ORDER BY is_active DESC, unit_name ASC')->fetchAll(PDO::FETCH_ASSOC);
+$suppliers = $pdo->query('SELECT id, supplier_code, supplier_name, contact_name, phone, address, notes, is_active FROM master_suppliers ORDER BY is_active DESC, supplier_name ASC')->fetchAll(PDO::FETCH_ASSOC);
 ?>
 <!DOCTYPE html>
 <html lang="id">
@@ -380,9 +589,179 @@ foreach ($templateRows as $templateRow) {
             font-size: 13px;
             font-weight: 600;
         }
+        .fold-card {
+            margin-top: 18px;
+            background: #fff;
+            border: 1px solid var(--border-color);
+            border-radius: 14px;
+            overflow: hidden;
+        }
+        .fold-summary {
+            list-style: none;
+            padding: 14px 16px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            font-weight: 700;
+            font-size: 15px;
+            background: #fafafa;
+        }
+        .fold-summary::-webkit-details-marker {
+            display: none;
+        }
+        .fold-summary .left {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .fold-summary .right {
+            font-size: 12px;
+            color: var(--text-muted);
+            font-weight: 600;
+        }
+        .fold-content {
+            padding: 16px;
+            animation: foldIn 160ms ease;
+        }
+        @keyframes foldIn {
+            from { opacity: 0; transform: translateY(-4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .units-layout {
+            display: grid;
+            grid-template-columns: minmax(320px, 420px) 1fr;
+            gap: 14px;
+            align-items: start;
+        }
+        .unit-form-card {
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 14px;
+            background: #fff;
+        }
+        .unit-list-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 12px;
+        }
+        .unit-card {
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 12px;
+            background: #fff;
+        }
+        .unit-code {
+            font-size: 11px;
+            font-weight: 700;
+            color: #4f46e5;
+            background: #eef2ff;
+            border: 1px solid #c7d2fe;
+            border-radius: 999px;
+            padding: 2px 8px;
+            display: inline-block;
+            margin-bottom: 8px;
+        }
+        .unit-name {
+            font-size: 16px;
+            font-weight: 700;
+            margin-bottom: 2px;
+        }
+        .unit-symbol {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+        .unit-state {
+            margin-top: 10px;
+            display: inline-block;
+            font-size: 11px;
+            font-weight: 700;
+            border-radius: 999px;
+            padding: 3px 8px;
+            border: 1px solid #a7f3d0;
+            color: #065f46;
+            background: #ecfdf5;
+        }
+        .unit-state.off {
+            border-color: #e5e7eb;
+            color: #6b7280;
+            background: #f9fafb;
+        }
+        .unit-actions {
+            margin-top: 10px;
+            display: flex;
+            gap: 8px;
+        }
+        .supplier-layout {
+            display: grid;
+            grid-template-columns: minmax(340px, 460px) 1fr;
+            gap: 14px;
+            align-items: start;
+        }
+        .supplier-form-card {
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 14px;
+            background: #fff;
+        }
+        .supplier-list-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 12px;
+        }
+        .supplier-card {
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 12px;
+            background: #fff;
+        }
+        .supplier-code {
+            font-size: 11px;
+            font-weight: 700;
+            color: #0369a1;
+            background: #ecfeff;
+            border: 1px solid #a5f3fc;
+            border-radius: 999px;
+            padding: 2px 8px;
+            display: inline-block;
+            margin-bottom: 8px;
+        }
+        .supplier-name {
+            font-size: 16px;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+        .supplier-meta {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 2px;
+        }
+        .btn-mini {
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: #fff;
+            color: var(--text-primary);
+            font-size: 12px;
+            font-weight: 600;
+            padding: 6px 10px;
+            cursor: pointer;
+        }
+        .btn-mini.edit {
+            border-color: #bfdbfe;
+            color: #1d4ed8;
+            background: #eff6ff;
+        }
+        .btn-mini.del {
+            border-color: #fecaca;
+            color: #b91c1c;
+            background: #fef2f2;
+        }
         @media (max-width: 1100px) {
             .settings-layout { grid-template-columns: 1fr; }
             .template-grid { grid-template-columns: 1fr; }
+            .units-layout { grid-template-columns: 1fr; }
+            .supplier-layout { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -431,6 +810,34 @@ foreach ($templateRows as $templateRow) {
                 <?php if ($_GET['msg'] === 'error_logo_type') echo 'Format logo tidak valid. Gunakan PNG/JPG/JPEG/WEBP/SVG.'; ?>
                 <?php if ($_GET['msg'] === 'error_logo_size') echo 'Ukuran logo terlalu besar (maksimal 2MB).'; ?>
                 <?php if ($_GET['msg'] === 'error_logo_upload') echo 'Gagal upload logo. Coba lagi.'; ?>
+            </div>
+        <?php endif; ?>
+        <?php if (isset($_GET['msg']) && in_array($_GET['msg'], ['unit_saved', 'unit_deleted'], true)): ?>
+            <div class="alert-save">
+                <?php if ($_GET['msg'] === 'unit_saved') echo 'Master satuan berhasil disimpan.'; ?>
+                <?php if ($_GET['msg'] === 'unit_deleted') echo 'Master satuan berhasil dihapus.'; ?>
+            </div>
+        <?php endif; ?>
+        <?php if (isset($_GET['msg']) && in_array($_GET['msg'], ['unit_error_required', 'unit_error_duplicate', 'unit_error_delete', 'unit_error'], true)): ?>
+            <div class="alert-save" style="background:#fef2f2;border-color:#f87171;color:#991b1b;">
+                <?php if ($_GET['msg'] === 'unit_error_required') echo 'Kode, nama, dan simbol satuan wajib diisi.'; ?>
+                <?php if ($_GET['msg'] === 'unit_error_duplicate') echo 'Kode satuan sudah digunakan. Gunakan kode lain.'; ?>
+                <?php if ($_GET['msg'] === 'unit_error_delete') echo 'Satuan tidak dapat dihapus karena masih terpakai data lain.'; ?>
+                <?php if ($_GET['msg'] === 'unit_error') echo 'Terjadi kesalahan saat memproses master satuan.'; ?>
+            </div>
+        <?php endif; ?>
+        <?php if (isset($_GET['msg']) && in_array($_GET['msg'], ['supplier_saved', 'supplier_deleted'], true)): ?>
+            <div class="alert-save">
+                <?php if ($_GET['msg'] === 'supplier_saved') echo 'Master supplier berhasil disimpan.'; ?>
+                <?php if ($_GET['msg'] === 'supplier_deleted') echo 'Master supplier berhasil dihapus.'; ?>
+            </div>
+        <?php endif; ?>
+        <?php if (isset($_GET['msg']) && in_array($_GET['msg'], ['supplier_error_required', 'supplier_error_duplicate', 'supplier_error_delete', 'supplier_error'], true)): ?>
+            <div class="alert-save" style="background:#fef2f2;border-color:#f87171;color:#991b1b;">
+                <?php if ($_GET['msg'] === 'supplier_error_required') echo 'Kode supplier dan nama supplier wajib diisi.'; ?>
+                <?php if ($_GET['msg'] === 'supplier_error_duplicate') echo 'Kode supplier sudah digunakan. Gunakan kode lain.'; ?>
+                <?php if ($_GET['msg'] === 'supplier_error_delete') echo 'Supplier tidak dapat dihapus karena masih terpakai data lain.'; ?>
+                <?php if ($_GET['msg'] === 'supplier_error') echo 'Terjadi kesalahan saat memproses master supplier.'; ?>
             </div>
         <?php endif; ?>
 
@@ -569,74 +976,329 @@ foreach ($templateRows as $templateRow) {
             </a>
         </div>
 
-        <section class="backup-panel">
-            <h3 class="settings-title" style="font-size:16px; margin-bottom: 6px;">
-                <i data-feather="database" style="width:16px;height:16px;"></i>
-                Backup Database
-            </h3>
-            <p class="muted-note">Download file backup sesuai kebutuhan. Gunakan SQL untuk restore penuh, CSV untuk analisis transaksi.</p>
-            <div class="backup-actions">
-                <a class="btn-backup" href="backup_export.php?type=full_sql">
-                    <i data-feather="download" style="width:14px;height:14px;"></i>
-                    Export SQL (Semua Data)
-                </a>
-                <a class="btn-backup" href="backup_export.php?type=transactions_sql">
-                    <i data-feather="file-text" style="width:14px;height:14px;"></i>
-                    Export SQL (Transaksi)
-                </a>
-                <a class="btn-backup" href="backup_export.php?type=transactions_csv">
-                    <i data-feather="file" style="width:14px;height:14px;"></i>
-                    Export CSV (Transaksi)
-                </a>
+        <details class="fold-card" open>
+            <summary class="fold-summary">
+                <span class="left">
+                    <i data-feather="layers" style="width:16px;height:16px;"></i>
+                    Master Satuan
+                </span>
+                <span class="right">Klik untuk tampilkan/sembunyikan</span>
+            </summary>
+            <div class="fold-content">
+                <div class="units-layout">
+                    <div class="unit-form-card">
+                        <h3 class="settings-title" style="font-size:16px; margin-bottom:8px;">
+                            <i data-feather="plus-circle" style="width:16px;height:16px;"></i>
+                            Form Satuan
+                        </h3>
+                        <form method="POST" id="unitForm">
+                            <input type="hidden" name="action" id="unitAction" value="unit_create">
+                            <input type="hidden" name="unit_id" id="unitId" value="">
+                            <div class="field">
+                                <label for="unitCode">Kode Satuan</label>
+                                <input type="text" id="unitCode" name="unit_code" maxlength="24" placeholder="contoh: gr, kg, pcs, pack" required>
+                            </div>
+                            <div class="field">
+                                <label for="unitName">Nama Satuan</label>
+                                <input type="text" id="unitName" name="unit_name" maxlength="80" placeholder="contoh: Gram, Kilogram, Bungkus" required>
+                            </div>
+                            <div class="field">
+                                <label for="unitSymbol">Simbol Tampilan</label>
+                                <input type="text" id="unitSymbol" name="unit_symbol" maxlength="24" placeholder="contoh: g, kg, pcs, bks" required>
+                            </div>
+                            <label class="check-item" style="margin-bottom:12px;">
+                                <input type="checkbox" name="unit_is_active" id="unitActive" checked>
+                                Status Aktif
+                            </label>
+                            <div class="panel-footer" style="border-top:0;padding-top:0;justify-content:flex-start;">
+                                <button type="submit" class="btn-primary" id="unitSubmitBtn">
+                                    <i data-feather="save" style="width:14px;height:14px;vertical-align:text-bottom;"></i>
+                                    Simpan Satuan
+                                </button>
+                                <button type="button" class="btn-mini" onclick="resetUnitForm()">Reset</button>
+                            </div>
+                        </form>
+                    </div>
+                    <div>
+                        <h3 class="settings-title" style="font-size:16px; margin-bottom:8px;">
+                            <i data-feather="grid" style="width:16px;height:16px;"></i>
+                            Daftar Satuan
+                        </h3>
+                        <div class="unit-list-grid">
+                            <?php if (empty($units)): ?>
+                                <div class="unit-form-card" style="grid-column:1/-1;">
+                                    <div class="muted-note">Belum ada satuan. Tambahkan satuan dasar seperti gr, kg, pcs, pack, dus.</div>
+                                </div>
+                            <?php else: ?>
+                                <?php foreach ($units as $u): ?>
+                                    <div class="unit-card">
+                                        <span class="unit-code"><?= htmlspecialchars((string)$u['unit_code']) ?></span>
+                                        <div class="unit-name"><?= htmlspecialchars((string)$u['unit_name']) ?></div>
+                                        <div class="unit-symbol">Simbol: <?= htmlspecialchars((string)$u['unit_symbol']) ?></div>
+                                        <span class="unit-state <?= (int)$u['is_active'] === 1 ? '' : 'off' ?>"><?= (int)$u['is_active'] === 1 ? 'Aktif' : 'Nonaktif' ?></span>
+                                        <div class="unit-actions">
+                                            <button
+                                                type="button"
+                                                class="btn-mini edit"
+                                                onclick='editUnit(<?= json_encode([
+                                                    'id' => (int)$u['id'],
+                                                    'unit_code' => (string)$u['unit_code'],
+                                                    'unit_name' => (string)$u['unit_name'],
+                                                    'unit_symbol' => (string)$u['unit_symbol'],
+                                                    'is_active' => (int)$u['is_active'],
+                                                ], JSON_UNESCAPED_UNICODE) ?>)'>
+                                                Edit
+                                            </button>
+                                            <form method="POST" onsubmit="return confirm('Hapus satuan ini?');">
+                                                <input type="hidden" name="action" value="unit_delete">
+                                                <input type="hidden" name="unit_id" value="<?= (int)$u['id'] ?>">
+                                                <button type="submit" class="btn-mini del">Hapus</button>
+                                            </form>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                </div>
             </div>
-        </section>
+        </details>
 
-        <section class="template-panel">
-            <h3 class="settings-title" style="font-size:16px; margin-bottom: 6px;">
-                <i data-feather="file-text" style="width:16px;height:16px;"></i>
-                Master Format Laporan Cetakan
-            </h3>
-            <p class="muted-note">Template ini dipakai saat cetak di menu transaksi. Format tersimpan dalam tipe HTML dan bisa diedit kapan saja.</p>
-            <form method="POST">
-                <input type="hidden" name="action" value="save_print_templates">
-                <div class="template-grid">
-                    <div class="template-box">
-                        <label style="display:block;font-size:13px;font-weight:600;margin-bottom:6px;">Template Nota (HTML)</label>
-                        <textarea name="template_nota_html" placeholder="<div>Template Nota...</div>"><?= htmlspecialchars($printTemplates['nota']) ?></textarea>
+        <details class="fold-card" open>
+            <summary class="fold-summary">
+                <span class="left">
+                    <i data-feather="truck" style="width:16px;height:16px;"></i>
+                    Master Supplier
+                </span>
+                <span class="right">Klik untuk tampilkan/sembunyikan</span>
+            </summary>
+            <div class="fold-content">
+                <div class="supplier-layout">
+                    <div class="supplier-form-card">
+                        <h3 class="settings-title" style="font-size:16px; margin-bottom:8px;">
+                            <i data-feather="plus-circle" style="width:16px;height:16px;"></i>
+                            Form Supplier
+                        </h3>
+                        <form method="POST" id="supplierForm">
+                            <input type="hidden" name="action" id="supplierAction" value="supplier_create">
+                            <input type="hidden" name="supplier_id" id="supplierId" value="">
+                            <div class="field">
+                                <label for="supplierCode">Kode Supplier</label>
+                                <input type="text" id="supplierCode" name="supplier_code" maxlength="24" placeholder="Contoh: SUP-001" required>
+                            </div>
+                            <div class="field">
+                                <label for="supplierName">Nama Supplier</label>
+                                <input type="text" id="supplierName" name="supplier_name" maxlength="120" placeholder="Nama perusahaan / toko" required>
+                            </div>
+                            <div class="field">
+                                <label for="contactName">Nama PIC (Opsional)</label>
+                                <input type="text" id="contactName" name="contact_name" maxlength="120" placeholder="Nama kontak supplier">
+                            </div>
+                            <div class="field">
+                                <label for="supplierPhone">No. Telepon (Opsional)</label>
+                                <input type="text" id="supplierPhone" name="supplier_phone" maxlength="40" placeholder="08xx-xxxx-xxxx">
+                            </div>
+                            <div class="field">
+                                <label for="supplierAddress">Alamat (Opsional)</label>
+                                <textarea id="supplierAddress" name="supplier_address" rows="2" style="min-height:66px;"></textarea>
+                            </div>
+                            <div class="field">
+                                <label for="supplierNotes">Catatan (Opsional)</label>
+                                <textarea id="supplierNotes" name="supplier_notes" rows="2" style="min-height:66px;"></textarea>
+                            </div>
+                            <label class="check-item" style="margin-bottom:12px;">
+                                <input type="checkbox" name="supplier_is_active" id="supplierActive" checked>
+                                Status Aktif
+                            </label>
+                            <div class="panel-footer" style="border-top:0;padding-top:0;justify-content:flex-start;">
+                                <button type="submit" class="btn-primary" id="supplierSubmitBtn">
+                                    <i data-feather="save" style="width:14px;height:14px;vertical-align:text-bottom;"></i>
+                                    Simpan Supplier
+                                </button>
+                                <button type="button" class="btn-mini" onclick="resetSupplierForm()">Reset</button>
+                            </div>
+                        </form>
                     </div>
-                    <div class="template-box">
-                        <label style="display:block;font-size:13px;font-weight:600;margin-bottom:6px;">Template Kwitansi (HTML)</label>
-                        <textarea name="template_kwitansi_html" placeholder="<div>Template Kwitansi...</div>"><?= htmlspecialchars($printTemplates['kwitansi']) ?></textarea>
+                    <div>
+                        <h3 class="settings-title" style="font-size:16px; margin-bottom:8px;">
+                            <i data-feather="users" style="width:16px;height:16px;"></i>
+                            Daftar Supplier
+                        </h3>
+                        <div class="supplier-list-grid">
+                            <?php if (empty($suppliers)): ?>
+                                <div class="supplier-form-card" style="grid-column:1/-1;">
+                                    <div class="muted-note">Belum ada data supplier. Tambahkan supplier untuk kebutuhan modul pembelian/hutang.</div>
+                                </div>
+                            <?php else: ?>
+                                <?php foreach ($suppliers as $s): ?>
+                                    <div class="supplier-card">
+                                        <span class="supplier-code"><?= htmlspecialchars((string)$s['supplier_code']) ?></span>
+                                        <div class="supplier-name"><?= htmlspecialchars((string)$s['supplier_name']) ?></div>
+                                        <div class="supplier-meta">PIC: <?= htmlspecialchars((string)($s['contact_name'] ?? '-')) ?></div>
+                                        <div class="supplier-meta">Telp: <?= htmlspecialchars((string)($s['phone'] ?? '-')) ?></div>
+                                        <div class="supplier-meta">Alamat: <?= htmlspecialchars((string)($s['address'] ?? '-')) ?></div>
+                                        <span class="unit-state <?= (int)$s['is_active'] === 1 ? '' : 'off' ?>"><?= (int)$s['is_active'] === 1 ? 'Aktif' : 'Nonaktif' ?></span>
+                                        <div class="unit-actions">
+                                            <button
+                                                type="button"
+                                                class="btn-mini edit"
+                                                onclick='editSupplier(<?= json_encode([
+                                                    'id' => (int)$s['id'],
+                                                    'supplier_code' => (string)$s['supplier_code'],
+                                                    'supplier_name' => (string)$s['supplier_name'],
+                                                    'contact_name' => (string)($s['contact_name'] ?? ''),
+                                                    'phone' => (string)($s['phone'] ?? ''),
+                                                    'address' => (string)($s['address'] ?? ''),
+                                                    'notes' => (string)($s['notes'] ?? ''),
+                                                    'is_active' => (int)$s['is_active'],
+                                                ], JSON_UNESCAPED_UNICODE) ?>)'>
+                                                Edit
+                                            </button>
+                                            <form method="POST" onsubmit="return confirm('Hapus supplier ini?');">
+                                                <input type="hidden" name="action" value="supplier_delete">
+                                                <input type="hidden" name="supplier_id" value="<?= (int)$s['id'] ?>">
+                                                <button type="submit" class="btn-mini del">Hapus</button>
+                                            </form>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                        </div>
                     </div>
                 </div>
-                <div class="template-hint">
-                    Placeholder yang tersedia:
-                    <code>{{store_name}}</code>
-                    <code>{{store_address}}</code>
-                    <code>{{store_phone}}</code>
-                    <code>{{bank_account}}</code>
-                    <code>{{logo_url}}</code>
-                    <code>{{logo_img}}</code>
-                    <code>{{invoice_no}}</code>
-                    <code>{{transaction_at}}</code>
-                    <code>{{customer_name}}</code>
-                    <code>{{items_rows}}</code>
-                    <code>{{total}}</code>
-                    <code>{{paid_amount}}</code>
-                    <code>{{change_amount}}</code>
-                    <code>{{status}}</code>
-                    <code>{{footer_text}}</code>
-                </div>
-                <div class="panel-footer" style="margin-top:10px;">
-                    <button type="submit" class="btn-primary">
-                        <i data-feather="save" style="width:14px;height:14px;vertical-align:text-bottom;"></i>
-                        Simpan Template Cetak
-                    </button>
-                </div>
-            </form>
-        </section>
+            </div>
+        </details>
+
+        <details class="fold-card">
+            <summary class="fold-summary">
+                <span class="left">
+                    <i data-feather="database" style="width:16px;height:16px;"></i>
+                    Backup Database
+                </span>
+                <span class="right">Klik untuk tampilkan/sembunyikan</span>
+            </summary>
+            <div class="fold-content">
+                <section class="backup-panel" style="margin-top:0;">
+                    <p class="muted-note">Download file backup sesuai kebutuhan. Gunakan SQL untuk restore penuh, CSV untuk analisis transaksi.</p>
+                    <div class="backup-actions">
+                        <a class="btn-backup" href="backup_export.php?type=full_sql">
+                            <i data-feather="download" style="width:14px;height:14px;"></i>
+                            Export SQL (Semua Data)
+                        </a>
+                        <a class="btn-backup" href="backup_export.php?type=transactions_sql">
+                            <i data-feather="file-text" style="width:14px;height:14px;"></i>
+                            Export SQL (Transaksi)
+                        </a>
+                        <a class="btn-backup" href="backup_export.php?type=transactions_csv">
+                            <i data-feather="file" style="width:14px;height:14px;"></i>
+                            Export CSV (Transaksi)
+                        </a>
+                    </div>
+                </section>
+            </div>
+        </details>
+
+        <details class="fold-card">
+            <summary class="fold-summary">
+                <span class="left">
+                    <i data-feather="file-text" style="width:16px;height:16px;"></i>
+                    Master Format Laporan Cetakan
+                </span>
+                <span class="right">Klik untuk tampilkan/sembunyikan</span>
+            </summary>
+            <div class="fold-content">
+                <section class="template-panel" style="margin-top:0;">
+                    <p class="muted-note">Template ini dipakai saat cetak di menu transaksi. Format tersimpan dalam tipe HTML dan bisa diedit kapan saja.</p>
+                    <form method="POST">
+                        <input type="hidden" name="action" value="save_print_templates">
+                        <div class="template-grid">
+                            <div class="template-box">
+                                <label style="display:block;font-size:13px;font-weight:600;margin-bottom:6px;">Template Nota (HTML)</label>
+                                <textarea name="template_nota_html" placeholder="<div>Template Nota...</div>"><?= htmlspecialchars($printTemplates['nota']) ?></textarea>
+                            </div>
+                            <div class="template-box">
+                                <label style="display:block;font-size:13px;font-weight:600;margin-bottom:6px;">Template Kwitansi (HTML)</label>
+                                <textarea name="template_kwitansi_html" placeholder="<div>Template Kwitansi...</div>"><?= htmlspecialchars($printTemplates['kwitansi']) ?></textarea>
+                            </div>
+                        </div>
+                        <div class="template-hint">
+                            Placeholder yang tersedia:
+                            <code>{{store_name}}</code>
+                            <code>{{store_address}}</code>
+                            <code>{{store_phone}}</code>
+                            <code>{{bank_account}}</code>
+                            <code>{{logo_url}}</code>
+                            <code>{{logo_img}}</code>
+                            <code>{{invoice_no}}</code>
+                            <code>{{transaction_at}}</code>
+                            <code>{{customer_name}}</code>
+                            <code>{{items_rows}}</code>
+                            <code>{{total}}</code>
+                            <code>{{paid_amount}}</code>
+                            <code>{{change_amount}}</code>
+                            <code>{{status}}</code>
+                            <code>{{footer_text}}</code>
+                        </div>
+                        <div class="panel-footer" style="margin-top:10px;">
+                            <button type="submit" class="btn-primary">
+                                <i data-feather="save" style="width:14px;height:14px;vertical-align:text-bottom;"></i>
+                                Simpan Template Cetak
+                            </button>
+                        </div>
+                    </form>
+                </section>
+            </div>
+        </details>
     </main>
 </div>
-<script>feather.replace();</script>
+<script>
+function editUnit(unit) {
+    document.getElementById('unitAction').value = 'unit_update';
+    document.getElementById('unitId').value = String(unit.id || '');
+    document.getElementById('unitCode').value = String(unit.unit_code || '');
+    document.getElementById('unitName').value = String(unit.unit_name || '');
+    document.getElementById('unitSymbol').value = String(unit.unit_symbol || '');
+    document.getElementById('unitActive').checked = Number(unit.is_active || 0) === 1;
+    document.getElementById('unitSubmitBtn').innerText = 'Update Satuan';
+}
+
+function resetUnitForm() {
+    document.getElementById('unitAction').value = 'unit_create';
+    document.getElementById('unitId').value = '';
+    document.getElementById('unitCode').value = '';
+    document.getElementById('unitName').value = '';
+    document.getElementById('unitSymbol').value = '';
+    document.getElementById('unitActive').checked = true;
+    document.getElementById('unitSubmitBtn').innerText = 'Simpan Satuan';
+}
+
+function editSupplier(supplier) {
+    document.getElementById('supplierAction').value = 'supplier_update';
+    document.getElementById('supplierId').value = String(supplier.id || '');
+    document.getElementById('supplierCode').value = String(supplier.supplier_code || '');
+    document.getElementById('supplierName').value = String(supplier.supplier_name || '');
+    document.getElementById('contactName').value = String(supplier.contact_name || '');
+    document.getElementById('supplierPhone').value = String(supplier.phone || '');
+    document.getElementById('supplierAddress').value = String(supplier.address || '');
+    document.getElementById('supplierNotes').value = String(supplier.notes || '');
+    document.getElementById('supplierActive').checked = Number(supplier.is_active || 0) === 1;
+    document.getElementById('supplierSubmitBtn').innerText = 'Update Supplier';
+}
+
+function resetSupplierForm() {
+    document.getElementById('supplierAction').value = 'supplier_create';
+    document.getElementById('supplierId').value = '';
+    document.getElementById('supplierCode').value = '';
+    document.getElementById('supplierName').value = '';
+    document.getElementById('contactName').value = '';
+    document.getElementById('supplierPhone').value = '';
+    document.getElementById('supplierAddress').value = '';
+    document.getElementById('supplierNotes').value = '';
+    document.getElementById('supplierActive').checked = true;
+    document.getElementById('supplierSubmitBtn').innerText = 'Simpan Supplier';
+}
+
+feather.replace();
+</script>
 </body>
 </html>

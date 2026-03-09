@@ -6,6 +6,26 @@ $pdo = get_db();
 ensure_auth_tables($pdo);
 require_login();
 $pdo->exec(
+    'CREATE TABLE IF NOT EXISTS master_units (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        unit_code VARCHAR(24) NOT NULL UNIQUE,
+        unit_name VARCHAR(80) NOT NULL,
+        unit_symbol VARCHAR(24) NOT NULL,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+);
+$hasUnitIdOnProducts = $pdo->query("SHOW COLUMNS FROM products LIKE 'unit_id'")->fetch(PDO::FETCH_ASSOC);
+if (!$hasUnitIdOnProducts) {
+    $pdo->exec('ALTER TABLE products ADD COLUMN unit_id INT UNSIGNED NULL AFTER kategori');
+}
+$hasUnitBaseQtyOnProducts = $pdo->query("SHOW COLUMNS FROM products LIKE 'unit_base_qty'")->fetch(PDO::FETCH_ASSOC);
+if (!$hasUnitBaseQtyOnProducts) {
+    $pdo->exec('ALTER TABLE products ADD COLUMN unit_base_qty DECIMAL(15,4) NOT NULL DEFAULT 1 AFTER unit_id');
+}
+
+$pdo->exec(
     'CREATE TABLE IF NOT EXISTS sales_transactions (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         invoice_no VARCHAR(40) NOT NULL UNIQUE,
@@ -32,6 +52,10 @@ $pdo->exec(
         variant_name VARCHAR(120) NULL,
         price DECIMAL(15,2) NOT NULL DEFAULT 0,
         qty INT NOT NULL DEFAULT 1,
+        unit_id_snapshot INT UNSIGNED NULL,
+        unit_symbol_snapshot VARCHAR(24) NULL,
+        unit_base_qty_snapshot DECIMAL(15,4) NOT NULL DEFAULT 1,
+        base_qty_total DECIMAL(15,4) NOT NULL DEFAULT 0,
         subtotal DECIMAL(15,2) NOT NULL DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX idx_transaction_id (transaction_id),
@@ -40,6 +64,22 @@ $pdo->exec(
             ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
 );
+$hasUnitIdSnapshot = $pdo->query("SHOW COLUMNS FROM sales_transaction_items LIKE 'unit_id_snapshot'")->fetch(PDO::FETCH_ASSOC);
+if (!$hasUnitIdSnapshot) {
+    $pdo->exec("ALTER TABLE sales_transaction_items ADD COLUMN unit_id_snapshot INT UNSIGNED NULL AFTER qty");
+}
+$hasUnitSymbolSnapshot = $pdo->query("SHOW COLUMNS FROM sales_transaction_items LIKE 'unit_symbol_snapshot'")->fetch(PDO::FETCH_ASSOC);
+if (!$hasUnitSymbolSnapshot) {
+    $pdo->exec("ALTER TABLE sales_transaction_items ADD COLUMN unit_symbol_snapshot VARCHAR(24) NULL AFTER unit_id_snapshot");
+}
+$hasUnitBaseQtySnapshot = $pdo->query("SHOW COLUMNS FROM sales_transaction_items LIKE 'unit_base_qty_snapshot'")->fetch(PDO::FETCH_ASSOC);
+if (!$hasUnitBaseQtySnapshot) {
+    $pdo->exec("ALTER TABLE sales_transaction_items ADD COLUMN unit_base_qty_snapshot DECIMAL(15,4) NOT NULL DEFAULT 1 AFTER unit_symbol_snapshot");
+}
+$hasBaseQtyTotal = $pdo->query("SHOW COLUMNS FROM sales_transaction_items LIKE 'base_qty_total'")->fetch(PDO::FETCH_ASSOC);
+if (!$hasBaseQtyTotal) {
+    $pdo->exec("ALTER TABLE sales_transaction_items ADD COLUMN base_qty_total DECIMAL(15,4) NOT NULL DEFAULT 0 AFTER unit_base_qty_snapshot");
+}
 
 function rupiah($v): string
 {
@@ -49,6 +89,7 @@ function rupiah($v): string
 function fetch_report_data(PDO $pdo, string $startDate, string $endDate, string $status): array
 {
     $rangeWhere = 'st.transaction_at >= :start_dt AND st.transaction_at < :end_dt';
+    $baseQtyExpr = 'COALESCE(NULLIF(sti.base_qty_total,0), (sti.qty * COALESCE(NULLIF(sti.unit_base_qty_snapshot,0),1)))';
     $baseParams = [
         ':start_dt' => $startDate . ' 00:00:00',
         ':end_dt' => date('Y-m-d', strtotime($endDate . ' +1 day')) . ' 00:00:00',
@@ -72,6 +113,21 @@ function fetch_report_data(PDO $pdo, string $startDate, string $endDate, string 
     );
     $summaryStmt->execute($baseParams + $statusParams);
     $summary = $summaryStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+    $baseQtyWhere = $rangeWhere;
+    $baseQtyParams = $baseParams;
+    if ($status !== 'all') {
+        $baseQtyWhere .= ' AND st.status = :status_base';
+        $baseQtyParams[':status_base'] = $status;
+    }
+    $baseQtyStmt = $pdo->prepare(
+        "SELECT COALESCE(SUM({$baseQtyExpr}), 0) AS total_base_qty
+         FROM sales_transaction_items sti
+         INNER JOIN sales_transactions st ON st.id = sti.transaction_id
+         WHERE {$baseQtyWhere}"
+    );
+    $baseQtyStmt->execute($baseQtyParams);
+    $summary['total_base_qty'] = (float)$baseQtyStmt->fetchColumn();
 
     $labaSummaryStmt = $pdo->prepare(
         "SELECT
@@ -99,6 +155,9 @@ function fetch_report_data(PDO $pdo, string $startDate, string $endDate, string 
             sti.qty,
             sti.price,
             sti.subtotal,
+            sti.unit_symbol_snapshot,
+            sti.unit_base_qty_snapshot,
+            {$baseQtyExpr} AS base_qty_total,
             COALESCE(p.harga_beli, 0) AS harga_beli,
             (sti.qty * COALESCE(p.harga_beli, 0)) AS modal_total,
             (sti.subtotal - (sti.qty * COALESCE(p.harga_beli, 0))) AS laba
@@ -131,6 +190,8 @@ function fetch_report_data(PDO $pdo, string $startDate, string $endDate, string 
             sti.product_name,
             COALESCE(sti.variant_name, '-') AS variant_name,
             SUM(sti.qty) AS qty_total,
+            SUM({$baseQtyExpr}) AS base_qty_total,
+            MIN(COALESCE(sti.unit_symbol_snapshot, '')) AS unit_symbol_snapshot,
             AVG(sti.price) AS harga_jual_avg,
             COALESCE(p.harga_beli, 0) AS harga_beli,
             SUM(sti.subtotal) AS omzet_total,
@@ -155,6 +216,48 @@ function fetch_report_data(PDO $pdo, string $startDate, string $endDate, string 
     ];
 }
 
+function sync_missing_unit_snapshots(PDO $pdo, string $startDate, string $endDate, string $status): int
+{
+    $where = [
+        'st.transaction_at >= :start_dt',
+        'st.transaction_at < :end_dt',
+    ];
+    $params = [
+        ':start_dt' => $startDate . ' 00:00:00',
+        ':end_dt' => date('Y-m-d', strtotime($endDate . ' +1 day')) . ' 00:00:00',
+    ];
+    if ($status !== 'all') {
+        $where[] = 'st.status = :status';
+        $params[':status'] = $status;
+    }
+
+    $sql = "UPDATE sales_transaction_items sti
+            INNER JOIN sales_transactions st ON st.id = sti.transaction_id
+            LEFT JOIN products p ON p.id = sti.product_id
+            LEFT JOIN master_units mu ON mu.id = p.unit_id
+            SET
+                sti.unit_id_snapshot = p.unit_id,
+                sti.unit_symbol_snapshot = COALESCE(mu.unit_symbol, sti.unit_symbol_snapshot),
+                sti.unit_base_qty_snapshot = CASE
+                    WHEN p.unit_base_qty IS NULL OR p.unit_base_qty <= 0 THEN 1
+                    ELSE p.unit_base_qty
+                END,
+                sti.base_qty_total = sti.qty * CASE
+                    WHEN p.unit_base_qty IS NULL OR p.unit_base_qty <= 0 THEN 1
+                    ELSE p.unit_base_qty
+                END
+            WHERE " . implode(' AND ', $where) . "
+              AND (
+                    sti.unit_id_snapshot IS NULL
+                    OR COALESCE(sti.unit_symbol_snapshot, '') = ''
+                    OR COALESCE(sti.unit_base_qty_snapshot, 0) <= 0
+                    OR COALESCE(sti.base_qty_total, 0) <= 0
+              )";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    return (int)$stmt->rowCount();
+}
+
 function output_csv_export(array $data, string $startDate, string $endDate, string $status): void
 {
     $filename = "laporan_transaksi_{$startDate}_{$endDate}.csv";
@@ -169,11 +272,12 @@ function output_csv_export(array $data, string $startDate, string $endDate, stri
     fputcsv($out, ['Omzet Total', (string)($data['summary']['omzet_total'] ?? 0)]);
     fputcsv($out, ['Omzet Paid', (string)($data['summary']['omzet_paid'] ?? 0)]);
     fputcsv($out, ['Omzet Pending', (string)($data['summary']['omzet_pending'] ?? 0)]);
+    fputcsv($out, ['Total Base Qty', (string)round((float)($data['summary']['total_base_qty'] ?? 0), 2)]);
     fputcsv($out, ['Laba Kotor', (string)($data['laba_summary']['laba_kotor'] ?? 0)]);
     fputcsv($out, []);
 
     fputcsv($out, ['DETAIL TRANSAKSI']);
-    fputcsv($out, ['Waktu', 'Invoice', 'Pelanggan', 'Status', 'Produk', 'Varian', 'Qty', 'Harga Jual', 'Subtotal', 'Harga Beli', 'Modal', 'Laba']);
+    fputcsv($out, ['Waktu', 'Invoice', 'Pelanggan', 'Status', 'Produk', 'Varian', 'Qty', 'Satuan', 'Konversi Base', 'Total Base Qty', 'Harga Jual', 'Subtotal', 'Harga Beli', 'Modal', 'Laba']);
     foreach ($data['detail_rows'] as $row) {
         fputcsv($out, [
             $row['transaction_at'] ?? '',
@@ -183,6 +287,9 @@ function output_csv_export(array $data, string $startDate, string $endDate, stri
             $row['product_name'] ?? '',
             $row['variant_name'] ?? '',
             $row['qty'] ?? 0,
+            $row['unit_symbol_snapshot'] ?? '',
+            round((float)($row['unit_base_qty_snapshot'] ?? 0), 2),
+            round((float)($row['base_qty_total'] ?? 0), 2),
             $row['price'] ?? 0,
             $row['subtotal'] ?? 0,
             $row['harga_beli'] ?? 0,
@@ -206,12 +313,14 @@ function output_csv_export(array $data, string $startDate, string $endDate, stri
     fputcsv($out, []);
 
     fputcsv($out, ['LABA PER PRODUK']);
-    fputcsv($out, ['Produk', 'Varian', 'Qty Terjual', 'Harga Jual Avg', 'Harga Beli', 'Omzet', 'Modal', 'Laba']);
+    fputcsv($out, ['Produk', 'Varian', 'Qty Terjual', 'Total Base Qty', 'Satuan', 'Harga Jual Avg', 'Harga Beli', 'Omzet', 'Modal', 'Laba']);
     foreach ($data['laba_rows'] as $row) {
         fputcsv($out, [
             $row['product_name'] ?? '',
             $row['variant_name'] ?? '',
             $row['qty_total'] ?? 0,
+            round((float)($row['base_qty_total'] ?? 0), 2),
+            $row['unit_symbol_snapshot'] ?? '',
             $row['harga_jual_avg'] ?? 0,
             $row['harga_beli'] ?? 0,
             $row['omzet_total'] ?? 0,
@@ -237,11 +346,12 @@ function output_excel_export(array $data, string $startDate, string $endDate, st
     echo '<tr><td>Omzet Total</td><td>' . (float)($data['summary']['omzet_total'] ?? 0) . '</td></tr>';
     echo '<tr><td>Omzet Paid</td><td>' . (float)($data['summary']['omzet_paid'] ?? 0) . '</td></tr>';
     echo '<tr><td>Omzet Pending</td><td>' . (float)($data['summary']['omzet_pending'] ?? 0) . '</td></tr>';
+    echo '<tr><td>Total Base Qty</td><td>' . round((float)($data['summary']['total_base_qty'] ?? 0), 2) . '</td></tr>';
     echo '<tr><td>Laba Kotor</td><td>' . (float)($data['laba_summary']['laba_kotor'] ?? 0) . '</td></tr>';
     echo '</table><br>';
 
-    echo '<table><tr><th colspan="12">Detail Transaksi</th></tr>';
-    echo '<tr><th>Waktu</th><th>Invoice</th><th>Pelanggan</th><th>Status</th><th>Produk</th><th>Varian</th><th>Qty</th><th>Harga Jual</th><th>Subtotal</th><th>Harga Beli</th><th>Modal</th><th>Laba</th></tr>';
+    echo '<table><tr><th colspan="15">Detail Transaksi</th></tr>';
+    echo '<tr><th>Waktu</th><th>Invoice</th><th>Pelanggan</th><th>Status</th><th>Produk</th><th>Varian</th><th>Qty</th><th>Satuan</th><th>Konversi Base</th><th>Total Base Qty</th><th>Harga Jual</th><th>Subtotal</th><th>Harga Beli</th><th>Modal</th><th>Laba</th></tr>';
     foreach ($data['detail_rows'] as $row) {
         echo '<tr>';
         echo '<td>' . htmlspecialchars((string)($row['transaction_at'] ?? '')) . '</td>';
@@ -251,6 +361,9 @@ function output_excel_export(array $data, string $startDate, string $endDate, st
         echo '<td>' . htmlspecialchars((string)($row['product_name'] ?? '')) . '</td>';
         echo '<td>' . htmlspecialchars((string)($row['variant_name'] ?? '')) . '</td>';
         echo '<td>' . (float)($row['qty'] ?? 0) . '</td>';
+        echo '<td>' . htmlspecialchars((string)($row['unit_symbol_snapshot'] ?? '')) . '</td>';
+        echo '<td>' . round((float)($row['unit_base_qty_snapshot'] ?? 0), 2) . '</td>';
+        echo '<td>' . round((float)($row['base_qty_total'] ?? 0), 2) . '</td>';
         echo '<td>' . (float)($row['price'] ?? 0) . '</td>';
         echo '<td>' . (float)($row['subtotal'] ?? 0) . '</td>';
         echo '<td>' . (float)($row['harga_beli'] ?? 0) . '</td>';
@@ -273,13 +386,15 @@ function output_excel_export(array $data, string $startDate, string $endDate, st
     }
     echo '</table><br>';
 
-    echo '<table><tr><th colspan="8">Laba Per Produk</th></tr>';
-    echo '<tr><th>Produk</th><th>Varian</th><th>Qty Terjual</th><th>Harga Jual Avg</th><th>Harga Beli</th><th>Omzet</th><th>Modal</th><th>Laba</th></tr>';
+    echo '<table><tr><th colspan="10">Laba Per Produk</th></tr>';
+    echo '<tr><th>Produk</th><th>Varian</th><th>Qty Terjual</th><th>Total Base Qty</th><th>Satuan</th><th>Harga Jual Avg</th><th>Harga Beli</th><th>Omzet</th><th>Modal</th><th>Laba</th></tr>';
     foreach ($data['laba_rows'] as $row) {
         echo '<tr>';
         echo '<td>' . htmlspecialchars((string)($row['product_name'] ?? '')) . '</td>';
         echo '<td>' . htmlspecialchars((string)($row['variant_name'] ?? '')) . '</td>';
         echo '<td>' . (float)($row['qty_total'] ?? 0) . '</td>';
+        echo '<td>' . round((float)($row['base_qty_total'] ?? 0), 2) . '</td>';
+        echo '<td>' . htmlspecialchars((string)($row['unit_symbol_snapshot'] ?? '')) . '</td>';
         echo '<td>' . (float)($row['harga_jual_avg'] ?? 0) . '</td>';
         echo '<td>' . (float)($row['harga_beli'] ?? 0) . '</td>';
         echo '<td>' . (float)($row['omzet_total'] ?? 0) . '</td>';
@@ -299,6 +414,18 @@ if (!in_array($status, ['all', 'pending', 'paid'], true)) {
     $status = 'all';
 }
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'refresh_unit_snapshot') {
+    $startDatePost = trim((string)($_POST['start_date'] ?? date('Y-m-01')));
+    $endDatePost = trim((string)($_POST['end_date'] ?? date('Y-m-d')));
+    $statusPost = trim((string)($_POST['status'] ?? 'all'));
+    if (!in_array($statusPost, ['all', 'pending', 'paid'], true)) {
+        $statusPost = 'all';
+    }
+    $updated = sync_missing_unit_snapshots($pdo, $startDatePost, $endDatePost, $statusPost);
+    header('Location: laporan.php?start_date=' . urlencode($startDatePost) . '&end_date=' . urlencode($endDatePost) . '&status=' . urlencode($statusPost) . '&msg=unit_refresh_done&updated=' . $updated);
+    exit;
+}
+
 $data = fetch_report_data($pdo, $startDate, $endDate, $status);
 
 $exportType = trim((string)($_GET['export'] ?? ''));
@@ -314,6 +441,31 @@ $labaSummary = $data['laba_summary'];
 $detailRows = $data['detail_rows'];
 $rekapRows = $data['rekap_rows'];
 $labaRows = $data['laba_rows'];
+$baseQtyByUnit = [];
+foreach ($detailRows as $dr) {
+    $unit = trim((string)($dr['unit_symbol_snapshot'] ?? ''));
+    if ($unit === '') {
+        $unit = 'unit';
+    }
+    if (!isset($baseQtyByUnit[$unit])) {
+        $baseQtyByUnit[$unit] = 0.0;
+    }
+    $baseQtyByUnit[$unit] += (float)($dr['base_qty_total'] ?? 0);
+}
+ksort($baseQtyByUnit);
+
+$labaQtyTotal = 0.0;
+$labaBaseQtyTotal = 0.0;
+$labaOmzetTotal = 0.0;
+$labaModalTotal = 0.0;
+$labaGrandTotal = 0.0;
+foreach ($labaRows as $lr) {
+    $labaQtyTotal += (float)($lr['qty_total'] ?? 0);
+    $labaBaseQtyTotal += (float)($lr['base_qty_total'] ?? 0);
+    $labaOmzetTotal += (float)($lr['omzet_total'] ?? 0);
+    $labaModalTotal += (float)($lr['modal_total'] ?? 0);
+    $labaGrandTotal += (float)($lr['laba_total'] ?? 0);
+}
 ?>
 <!DOCTYPE html>
 <html lang="id">
@@ -351,7 +503,7 @@ $labaRows = $data['laba_rows'];
         }
         .cards {
             display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
+            grid-template-columns: repeat(5, minmax(0, 1fr));
             gap: 10px;
             margin-bottom: 12px;
         }
@@ -377,6 +529,31 @@ $labaRows = $data['laba_rows'];
             font-weight: 700;
             font-size: 14px;
         }
+        details.panel > summary.panel-head {
+            list-style: none;
+            cursor: pointer;
+            border-bottom: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+        details.panel > summary.panel-head::-webkit-details-marker {
+            display: none;
+        }
+        .panel-toggle {
+            color: var(--text-muted);
+            font-size: 12px;
+            font-weight: 600;
+        }
+        details.panel .panel-body {
+            border-top: 1px solid var(--border-color);
+            animation: panelFade 180ms ease;
+        }
+        @keyframes panelFade {
+            from { opacity: 0; transform: translateY(-4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
         .table-wrap { overflow: auto; }
         .table { width: 100%; border-collapse: collapse; min-width: 940px; }
         .table th, .table td {
@@ -387,12 +564,54 @@ $labaRows = $data['laba_rows'];
         }
         .table th { background: #fcfcfd; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted); font-size: 11px; }
         .table td.num, .table th.num { text-align: right; white-space: nowrap; }
+        .sortable-th {
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+        }
+        .sort-icon {
+            display: inline-block;
+            margin-left: 6px;
+            color: #94a3b8;
+            font-size: 10px;
+            width: 10px;
+            text-align: center;
+        }
         .badge {
             font-size: 11px;
             font-weight: 700;
             padding: 3px 8px;
             border-radius: 999px;
             display: inline-block;
+        }
+        .btn-refresh-icon {
+            border: 1px solid #bfdbfe;
+            background: #eff6ff;
+            color: #1d4ed8;
+            border-radius: 8px;
+            width: 24px;
+            height: 24px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            vertical-align: middle;
+            margin-left: 6px;
+        }
+        .alert-save {
+            background: #ecfdf5;
+            border: 1px solid #10b981;
+            color: #065f46;
+            border-radius: 12px;
+            padding: 10px 12px;
+            margin-bottom: 10px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .tfoot-total td {
+            background: #fafafa;
+            font-weight: 700;
+            border-top: 2px solid #e5e7eb;
         }
         .badge.pending { background: #ffedd5; color: #9a3412; border: 1px solid #fdba74; }
         .badge.paid { background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; }
@@ -439,6 +658,11 @@ $labaRows = $data['laba_rows'];
                 <p class="text-muted">Laporan transaksi detail, rekap harian, dan laba berdasarkan harga beli produk.</p>
             </div>
         </header>
+        <?php if (isset($_GET['msg']) && $_GET['msg'] === 'unit_refresh_done'): ?>
+            <div class="alert-save">
+                Refresh satuan transaksi selesai. Data ter-update: <?= number_format((int)($_GET['updated'] ?? 0), 0, ',', '.') ?> baris item.
+            </div>
+        <?php endif; ?>
 
         <form class="filter-box" method="GET">
             <div>
@@ -480,31 +704,63 @@ $labaRows = $data['laba_rows'];
                 <div class="label">Laba Kotor (Paid)</div>
                 <div class="value"><?= rupiah($labaSummary['laba_kotor'] ?? 0) ?></div>
             </div>
+            <?php if (empty($baseQtyByUnit)): ?>
+                <div class="card">
+                    <div class="label">Total Base Qty</div>
+                    <div class="value">0,00 unit</div>
+                </div>
+            <?php else: ?>
+                <?php foreach ($baseQtyByUnit as $unitSymbol => $qtyVal): ?>
+                    <div class="card">
+                        <div class="label">Total Base Qty (<?= htmlspecialchars($unitSymbol) ?>)</div>
+                        <div class="value"><?= number_format((float)$qtyVal, 2, ',', '.') ?> <?= htmlspecialchars($unitSymbol) ?></div>
+                    </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
         </div>
 
-        <section class="panel">
-            <div class="panel-head">Laporan Transaksi Detail</div>
+        <details class="panel" open>
+            <summary class="panel-head">
+                <span>Laporan Transaksi Detail</span>
+                <span class="panel-toggle">Klik untuk collapse/expand</span>
+            </summary>
+            <div class="panel-body">
             <div class="table-wrap">
-                <table class="table">
+                <table class="table" style="min-width:1240px;">
                     <thead>
                     <tr>
-                        <th>Waktu</th>
-                        <th>Invoice</th>
-                        <th>Pelanggan</th>
-                        <th>Status</th>
-                        <th>Produk</th>
-                        <th>Varian</th>
-                        <th class="num">Qty</th>
-                        <th class="num">Harga Jual</th>
-                        <th class="num">Subtotal</th>
-                        <th class="num">Harga Beli</th>
-                        <th class="num">Modal</th>
-                        <th class="num">Laba</th>
+                        <th class="sortable-th" data-sort-type="date">Waktu <span class="sort-icon">↕</span></th>
+                        <th class="sortable-th" data-sort-type="text">Invoice <span class="sort-icon">↕</span></th>
+                        <th class="sortable-th" data-sort-type="text">Pelanggan <span class="sort-icon">↕</span></th>
+                        <th class="sortable-th" data-sort-type="text">Status <span class="sort-icon">↕</span></th>
+                        <th class="sortable-th" data-sort-type="text">Produk <span class="sort-icon">↕</span></th>
+                        <th class="sortable-th" data-sort-type="text">Varian <span class="sort-icon">↕</span></th>
+                        <th class="num sortable-th" data-sort-type="num">Qty <span class="sort-icon">↕</span></th>
+                        <th class="num sortable-th" data-sort-type="text">
+                            Satuan
+                            <form method="POST" style="display:inline;">
+                                <input type="hidden" name="action" value="refresh_unit_snapshot">
+                                <input type="hidden" name="start_date" value="<?= htmlspecialchars($startDate) ?>">
+                                <input type="hidden" name="end_date" value="<?= htmlspecialchars($endDate) ?>">
+                                <input type="hidden" name="status" value="<?= htmlspecialchars($status) ?>">
+                                <button type="submit" class="btn-refresh-icon" title="Refresh satuan dari master produk">
+                                    <i data-feather="refresh-cw" style="width:13px;height:13px;"></i>
+                                </button>
+                            </form>
+                            <span class="sort-icon">↕</span>
+                        </th>
+                        <th class="num sortable-th" data-sort-type="num">Konversi Base <span class="sort-icon">↕</span></th>
+                        <th class="num sortable-th" data-sort-type="num">Total Base Qty <span class="sort-icon">↕</span></th>
+                        <th class="num sortable-th" data-sort-type="num">Harga Jual <span class="sort-icon">↕</span></th>
+                        <th class="num sortable-th" data-sort-type="num">Subtotal <span class="sort-icon">↕</span></th>
+                        <th class="num sortable-th" data-sort-type="num">Harga Beli <span class="sort-icon">↕</span></th>
+                        <th class="num sortable-th" data-sort-type="num">Modal <span class="sort-icon">↕</span></th>
+                        <th class="num sortable-th" data-sort-type="num">Laba <span class="sort-icon">↕</span></th>
                     </tr>
                     </thead>
-                    <tbody>
+                    <tbody id="detailBody">
                     <?php if (empty($detailRows)): ?>
-                        <tr><td colspan="12" style="text-align:center;color:var(--text-muted);padding:16px;">Tidak ada data transaksi.</td></tr>
+                        <tr><td colspan="15" style="text-align:center;color:var(--text-muted);padding:16px;">Tidak ada data transaksi.</td></tr>
                     <?php else: ?>
                         <?php foreach ($detailRows as $row): ?>
                             <tr>
@@ -515,6 +771,9 @@ $labaRows = $data['laba_rows'];
                                 <td><?= htmlspecialchars((string)$row['product_name']) ?></td>
                                 <td><?= htmlspecialchars((string)$row['variant_name']) ?></td>
                                 <td class="num"><?= number_format((float)$row['qty'], 0, ',', '.') ?></td>
+                                <td class="num"><?= htmlspecialchars((string)($row['unit_symbol_snapshot'] ?? '')) ?></td>
+                                <td class="num"><?= number_format((float)($row['unit_base_qty_snapshot'] ?? 0), 2, ',', '.') ?></td>
+                                <td class="num"><?= number_format((float)($row['base_qty_total'] ?? 0), 2, ',', '.') ?></td>
                                 <td class="num"><?= rupiah($row['price']) ?></td>
                                 <td class="num"><?= rupiah($row['subtotal']) ?></td>
                                 <td class="num"><?= rupiah($row['harga_beli']) ?></td>
@@ -526,10 +785,15 @@ $labaRows = $data['laba_rows'];
                     </tbody>
                 </table>
             </div>
-        </section>
+            </div>
+        </details>
 
-        <section class="panel">
-            <div class="panel-head">Laporan Transaksi Rekap (Harian)</div>
+        <details class="panel">
+            <summary class="panel-head">
+                <span>Laporan Transaksi Rekap (Harian)</span>
+                <span class="panel-toggle">Klik untuk collapse/expand</span>
+            </summary>
+            <div class="panel-body">
             <div class="table-wrap">
                 <table class="table" style="min-width:680px;">
                     <thead>
@@ -558,17 +822,24 @@ $labaRows = $data['laba_rows'];
                     </tbody>
                 </table>
             </div>
-        </section>
+            </div>
+        </details>
 
-        <section class="panel">
-            <div class="panel-head">Laporan Transaksi Laba (Per Produk/Varian)</div>
+        <details class="panel">
+            <summary class="panel-head">
+                <span>Laporan Transaksi Laba (Per Produk/Varian)</span>
+                <span class="panel-toggle">Klik untuk collapse/expand</span>
+            </summary>
+            <div class="panel-body">
             <div class="table-wrap">
-                <table class="table" style="min-width:860px;">
+                <table class="table" style="min-width:980px;">
                     <thead>
                     <tr>
                         <th>Produk</th>
                         <th>Varian</th>
                         <th class="num">Qty Terjual</th>
+                        <th class="num">Total Base Qty</th>
+                        <th class="num">Satuan</th>
                         <th class="num">Harga Jual Rata-rata</th>
                         <th class="num">Harga Beli</th>
                         <th class="num">Omzet</th>
@@ -578,13 +849,15 @@ $labaRows = $data['laba_rows'];
                     </thead>
                     <tbody>
                     <?php if (empty($labaRows)): ?>
-                        <tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:16px;">Tidak ada data laba.</td></tr>
+                        <tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:16px;">Tidak ada data laba.</td></tr>
                     <?php else: ?>
                         <?php foreach ($labaRows as $row): ?>
                             <tr>
                                 <td><?= htmlspecialchars((string)$row['product_name']) ?></td>
                                 <td><?= htmlspecialchars((string)$row['variant_name']) ?></td>
                                 <td class="num"><?= number_format((float)$row['qty_total'], 0, ',', '.') ?></td>
+                                <td class="num"><?= number_format((float)($row['base_qty_total'] ?? 0), 2, ',', '.') ?></td>
+                                <td class="num"><?= htmlspecialchars((string)($row['unit_symbol_snapshot'] ?? '')) ?></td>
                                 <td class="num"><?= rupiah($row['harga_jual_avg']) ?></td>
                                 <td class="num"><?= rupiah($row['harga_beli']) ?></td>
                                 <td class="num"><?= rupiah($row['omzet_total']) ?></td>
@@ -594,11 +867,100 @@ $labaRows = $data['laba_rows'];
                         <?php endforeach; ?>
                     <?php endif; ?>
                     </tbody>
+                    <?php if (!empty($labaRows)): ?>
+                    <tfoot>
+                        <tr class="tfoot-total">
+                            <td colspan="2">Total</td>
+                            <td class="num"><?= number_format($labaQtyTotal, 0, ',', '.') ?></td>
+                            <td class="num"><?= number_format($labaBaseQtyTotal, 2, ',', '.') ?></td>
+                            <td class="num">-</td>
+                            <td class="num">-</td>
+                            <td class="num"><?= rupiah($labaOmzetTotal) ?></td>
+                            <td class="num"><?= rupiah($labaModalTotal) ?></td>
+                            <td class="num"><?= rupiah($labaGrandTotal) ?></td>
+                        </tr>
+                    </tfoot>
+                    <?php endif; ?>
                 </table>
             </div>
-        </section>
+            </div>
+        </details>
     </main>
 </div>
-<script>feather.replace();</script>
+<script>
+function parseNum(text) {
+    const clean = String(text || '')
+        .replace(/[^0-9,.-]/g, '')
+        .replace(/\./g, '')
+        .replace(',', '.');
+    const val = parseFloat(clean);
+    return Number.isNaN(val) ? 0 : val;
+}
+
+function parseDate(text) {
+    const v = String(text || '').trim().replace(' ', 'T');
+    const t = Date.parse(v);
+    return Number.isNaN(t) ? 0 : t;
+}
+
+function initDetailSorting() {
+    const table = document.querySelector('.panel .table');
+    if (!table) return;
+    const tbody = document.getElementById('detailBody');
+    if (!tbody) return;
+    const headers = table.querySelectorAll('thead th.sortable-th');
+    let activeIndex = -1;
+    let activeDir = 'asc';
+
+    headers.forEach((th, idx) => {
+        th.addEventListener('click', () => {
+            const sortType = th.getAttribute('data-sort-type') || 'text';
+            const allRows = Array.from(tbody.querySelectorAll('tr'));
+            const dataRows = allRows.filter((r) => !r.classList.contains('summary-row'));
+            const summaryRows = allRows.filter((r) => r.classList.contains('summary-row'));
+
+            if (activeIndex === idx) {
+                activeDir = activeDir === 'asc' ? 'desc' : 'asc';
+            } else {
+                activeIndex = idx;
+                activeDir = 'asc';
+            }
+
+            dataRows.sort((a, b) => {
+                const aTxt = (a.children[idx]?.innerText || '').trim();
+                const bTxt = (b.children[idx]?.innerText || '').trim();
+                let av = aTxt;
+                let bv = bTxt;
+                if (sortType === 'num') {
+                    av = parseNum(aTxt);
+                    bv = parseNum(bTxt);
+                } else if (sortType === 'date') {
+                    av = parseDate(aTxt);
+                    bv = parseDate(bTxt);
+                } else {
+                    av = aTxt.toLowerCase();
+                    bv = bTxt.toLowerCase();
+                }
+                if (av < bv) return activeDir === 'asc' ? -1 : 1;
+                if (av > bv) return activeDir === 'asc' ? 1 : -1;
+                return 0;
+            });
+
+            headers.forEach((h) => {
+                const icon = h.querySelector('.sort-icon');
+                if (icon) icon.textContent = '↕';
+            });
+            const activeIcon = th.querySelector('.sort-icon');
+            if (activeIcon) activeIcon.textContent = activeDir === 'asc' ? '▲' : '▼';
+
+            dataRows.forEach((r) => tbody.appendChild(r));
+            summaryRows.forEach((r) => tbody.appendChild(r));
+        });
+    });
+}
+
+feather.replace();
+initDetailSorting();
+</script>
 </body>
 </html>

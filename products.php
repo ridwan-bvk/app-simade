@@ -6,9 +6,54 @@ require_once 'config/database.php';
 $pdo = get_db();
 ensure_auth_tables($pdo);
 require_login();
+$pdo->exec(
+    'CREATE TABLE IF NOT EXISTS master_units (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        unit_code VARCHAR(24) NOT NULL UNIQUE,
+        unit_name VARCHAR(80) NOT NULL,
+        unit_symbol VARCHAR(24) NOT NULL,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+);
+$pdo->exec(
+    'CREATE TABLE IF NOT EXISTS master_suppliers (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        supplier_code VARCHAR(24) NOT NULL UNIQUE,
+        supplier_name VARCHAR(120) NOT NULL,
+        contact_name VARCHAR(120) NULL,
+        phone VARCHAR(40) NULL,
+        address TEXT NULL,
+        notes TEXT NULL,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+);
+$hasUnitId = $pdo->query("SHOW COLUMNS FROM products LIKE 'unit_id'")->fetch(PDO::FETCH_ASSOC);
+if (!$hasUnitId) {
+    $pdo->exec('ALTER TABLE products ADD COLUMN unit_id INT UNSIGNED NULL AFTER kategori');
+}
+$hasUnitBaseQty = $pdo->query("SHOW COLUMNS FROM products LIKE 'unit_base_qty'")->fetch(PDO::FETCH_ASSOC);
+if (!$hasUnitBaseQty) {
+    $pdo->exec('ALTER TABLE products ADD COLUMN unit_base_qty DECIMAL(15,4) NOT NULL DEFAULT 1 AFTER unit_id');
+}
+$hasSupplierId = $pdo->query("SHOW COLUMNS FROM products LIKE 'supplier_id'")->fetch(PDO::FETCH_ASSOC);
+if (!$hasSupplierId) {
+    $pdo->exec('ALTER TABLE products ADD COLUMN supplier_id INT UNSIGNED NULL AFTER unit_base_qty');
+}
+
+$unitRows = $pdo->query('SELECT id, unit_code, unit_name, unit_symbol FROM master_units WHERE is_active = 1 ORDER BY unit_name ASC')->fetchAll(PDO::FETCH_ASSOC);
+$supplierRows = $pdo->query('SELECT id, supplier_code, supplier_name FROM master_suppliers WHERE is_active = 1 ORDER BY supplier_name ASC')->fetchAll(PDO::FETCH_ASSOC);
+
 $stmt = $pdo->query(
-    'SELECT p.*, COALESCE(v.total_variant_prices, 0) AS total_variant_prices
+    'SELECT p.*, p.unit_base_qty, mu.unit_name, mu.unit_symbol, mu.unit_code,
+            s.supplier_name, s.supplier_code,
+            COALESCE(v.total_variant_prices, 0) AS total_variant_prices
      FROM products p
+     LEFT JOIN master_units mu ON mu.id = p.unit_id
+     LEFT JOIN master_suppliers s ON s.id = p.supplier_id
      LEFT JOIN (
         SELECT product_id, COUNT(*) AS total_variant_prices
         FROM product_prices
@@ -179,9 +224,20 @@ $active_variants = $stmt->fetchAll();
         .modal-content {
             max-width: 680px !important;
             max-height: 92vh !important;
+            display: flex;
+            flex-direction: column;
+        }
+        .modal-content form {
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            flex: 1;
         }
         .modal-body {
             padding: 16px !important;
+            overflow-y: auto;
+            min-height: 0;
+            flex: 1;
         }
         .form-group {
             margin-bottom: 12px !important;
@@ -191,6 +247,26 @@ $active_variants = $stmt->fetchAll();
             bottom: 0;
             z-index: 2;
             padding: 14px 16px !important;
+        }
+        .variant-toggle-btn {
+            border: 1px solid #bfdbfe;
+            background: #eff6ff;
+            color: #1d4ed8;
+            border-radius: 8px;
+            padding: 6px 10px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .variant-pricing-content {
+            max-height: 420px;
+            opacity: 1;
+            overflow: hidden;
+            transition: max-height 220ms ease, opacity 220ms ease;
+        }
+        .variant-pricing-panel.collapsed .variant-pricing-content {
+            max-height: 0;
+            opacity: 0;
         }
         @media (max-width: 768px) {
             .variant-editor-row {
@@ -211,6 +287,7 @@ $active_variants = $stmt->fetchAll();
                 <li><a href="index.php" title="Kasir"><i data-feather="shopping-cart"></i></a></li>
                 <li><a href="transactions.php" title="Transaksi"><i data-feather="list"></i></a></li>
                 <li class="active"><a href="products.php" title="Produk"><i data-feather="package"></i></a></li>
+            <li><a href="purchases.php" title="Pembelian"><i data-feather="truck"></i></a></li>
             <li><a href="laporan.php" title="Laporan"><i data-feather="bar-chart-2"></i></a></li>
             <li><a href="settings.php" title="Pengaturan"><i data-feather="settings"></i></a></li>
             <li><a href="logout.php" title="Logout"><i data-feather="log-out"></i></a></li>
@@ -259,6 +336,8 @@ $active_variants = $stmt->fetchAll();
                             <th style="width: 120px;">Kode</th>
                             <th>Nama Barang</th>
                             <th style="width: 140px;">Kategori</th>
+                            <th style="width: 150px;">Supplier</th>
+                            <th style="width: 130px;">Satuan</th>
                             <th style="width: 150px;">Harga Beli</th>
                             <th style="width: 190px;">Harga Jual</th>
                             <th style="width: 100px; text-align: center;">Stok</th>
@@ -268,7 +347,7 @@ $active_variants = $stmt->fetchAll();
                     <tbody>
                         <?php if (empty($products)): ?>
                             <tr>
-                                <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 48px 24px;">
+                                <td colspan="10" style="text-align: center; color: var(--text-muted); padding: 48px 24px;">
                                     <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
                                         <i data-feather="package" style="width: 48px; height: 48px; opacity: 0.5;"></i>
                                         <p>Belum ada data produk di database.</p>
@@ -285,6 +364,22 @@ $active_variants = $stmt->fetchAll();
                                     <span class="category-btn active" style="padding: 4px 10px; font-size: 12px; cursor: default; background: var(--bg-main); color: var(--text-secondary); border-color: var(--border-color);">
                                         <?= htmlspecialchars($p['kategori']) ?>
                                     </span>
+                                </td>
+                                <td>
+                                    <?php if (!empty($p['supplier_name'])): ?>
+                                        <div style="font-weight:600;"><?= htmlspecialchars((string)$p['supplier_name']) ?></div>
+                                        <div style="font-size:11px;color:var(--text-muted);"><?= htmlspecialchars((string)($p['supplier_code'] ?? '')) ?></div>
+                                    <?php else: ?>
+                                        <span style="font-size:12px;color:var(--text-muted);">-</span>
+                                    <?php endif; ?>
+                                </td>
+                                <td>
+                                    <?php if (!empty($p['unit_symbol'])): ?>
+                                        <div style="font-weight:600;"><?= htmlspecialchars((string)$p['unit_symbol']) ?></div>
+                                        <div style="font-size:11px;color:var(--text-muted);">x <?= rtrim(rtrim(number_format((float)$p['unit_base_qty'], 4, '.', ''), '0'), '.') ?: '1' ?> base</div>
+                                    <?php else: ?>
+                                        <span style="font-size:12px;color:var(--text-muted);">-</span>
+                                    <?php endif; ?>
                                 </td>
                                 <td>Rp <?= number_format($p['harga_beli'], 0, ',', '.') ?></td>
                                 <td style="font-weight: 600; color: var(--emerald);">
@@ -344,42 +439,43 @@ $active_variants = $stmt->fetchAll();
                 
                 <div class="modal-body">
                     <!-- Harga per Variansi -->
-                    <div class="variant-pricing-panel">
+                    <div class="variant-pricing-panel collapsed" id="variantPricingPanel">
                         <div class="variant-pricing-head">
                             <h4>
                                 <i data-feather="tag" style="width: 16px; height: 16px;"></i>
                                 Harga Jual per Variansi
                             </h4>
-                            <p style="font-size:11px;">Opsional</p>
+                            <button type="button" class="variant-toggle-btn" id="variantToggleBtn">Tampilkan</button>
                         </div>
+                        <div class="variant-pricing-content" id="variantPricingContent">
+                            <div class="variant-editor-row">
+                                <div class="form-group">
+                                    <label for="default_variant_id">Varian Harga Default (Kasir)</label>
+                                    <select id="default_variant_id" name="default_variant_id" class="form-control" style="appearance: auto;">
+                                        <option value="">-- Gunakan Harga Jual Utama (manual) --</option>
+                                        <?php foreach ($active_variants as $av): ?>
+                                            <option value="<?= $av['id'] ?>" data-nama="<?= htmlspecialchars($av['nama_variansi']) ?>" data-warna="<?= htmlspecialchars($av['warna']) ?>">
+                                                <?= htmlspecialchars($av['nama_variansi']) ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="variant_price_editor">Harga Jual Varian (Rp)</label>
+                                    <input type="number" id="variant_price_editor" class="form-control" min="0" step="0.01" placeholder="Isi harga varian terpilih">
+                                </div>
+                                <div class="form-group variant-editor-action">
+                                    <button type="button" class="btn-secondary" onclick="saveCurrentVariantPrice()">
+                                        Simpan Harga
+                                    </button>
+                                </div>
+                            </div>
 
-                        <div class="variant-editor-row">
-                            <div class="form-group">
-                                <label for="default_variant_id">Varian Harga Default (Kasir)</label>
-                                <select id="default_variant_id" name="default_variant_id" class="form-control" style="appearance: auto;">
-                                    <option value="">-- Gunakan Harga Jual Utama (manual) --</option>
-                                    <?php foreach ($active_variants as $av): ?>
-                                        <option value="<?= $av['id'] ?>" data-nama="<?= htmlspecialchars($av['nama_variansi']) ?>" data-warna="<?= htmlspecialchars($av['warna']) ?>">
-                                            <?= htmlspecialchars($av['nama_variansi']) ?>
-                                        </option>
-                                    <?php endforeach; ?>
-                                </select>
+                            <div id="variantPricesList" class="variant-prices-list">
+                                <div class="variant-empty">Belum ada harga varian yang diinput.</div>
                             </div>
-                            <div class="form-group">
-                                <label for="variant_price_editor">Harga Jual Varian (Rp)</label>
-                                <input type="number" id="variant_price_editor" class="form-control" min="0" step="0.01" placeholder="Isi harga varian terpilih">
-                            </div>
-                            <div class="form-group variant-editor-action">
-                                <button type="button" class="btn-secondary" onclick="saveCurrentVariantPrice()">
-                                    Simpan Harga
-                                </button>
-                            </div>
+                            <div id="variantHiddenInputs"></div>
                         </div>
-
-                        <div id="variantPricesList" class="variant-prices-list">
-                            <div class="variant-empty">Belum ada harga varian yang diinput.</div>
-                        </div>
-                        <div id="variantHiddenInputs"></div>
                     </div>
 
                     <div style="display: flex; gap: 20px;">
@@ -397,6 +493,53 @@ $active_variants = $stmt->fetchAll();
                                 <option value="Snack">Snack</option>
                                 <option value="Lainnya">Lainnya</option>
                             </select>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="supplier_id">Supplier Utama (Opsional)</label>
+                        <select id="supplier_id" name="supplier_id" class="form-control" style="appearance: none;">
+                            <option value="">-- Pilih Supplier --</option>
+                            <?php foreach ($supplierRows as $sp): ?>
+                                <option value="<?= (int)$sp['id'] ?>">
+                                    <?= htmlspecialchars((string)$sp['supplier_name']) ?><?= trim((string)$sp['supplier_code']) !== '' ? ' (' . htmlspecialchars((string)$sp['supplier_code']) . ')' : '' ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div style="display: flex; gap: 20px; margin-bottom: 12px; background: #f9fafb; padding: 10px; border-radius: 8px; border: 1px solid #e5e7eb;">
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600;">
+                                <input type="checkbox" id="is_transaction_product" name="is_transaction_product" value="1" checked>
+                                Jual di Kasir
+                            </label>
+                            <div style="font-size: 11px; color: var(--text-muted); margin-left: 24px;">Tampil di menu Transaksi</div>
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600;">
+                                <input type="checkbox" id="is_purchase_product" name="is_purchase_product" value="1" checked>
+                                Beli dari Supplier
+                            </label>
+                            <div style="font-size: 11px; color: var(--text-muted); margin-left: 24px;">Tampil di menu Pembelian (PO)</div>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 20px;">
+                        <div class="form-group" style="flex: 1;">
+                            <label for="unit_id">Satuan Produk</label>
+                            <select id="unit_id" name="unit_id" class="form-control" style="appearance: none;">
+                                <option value="">-- Pilih Satuan (Opsional) --</option>
+                                <?php foreach ($unitRows as $u): ?>
+                                    <option value="<?= (int)$u['id'] ?>"><?= htmlspecialchars((string)$u['unit_name']) ?> (<?= htmlspecialchars((string)$u['unit_symbol']) ?>)</option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="form-group" style="flex: 1;">
+                            <label for="unit_base_qty">Konversi ke Base Report</label>
+                            <input type="number" id="unit_base_qty" name="unit_base_qty" class="form-control"
+                                   min="0.0001" step="0.0001" value="1" placeholder="Contoh: 500 (gram)">
+                            <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Laporan bisa hitung: Qty transaksi x konversi base.</div>
                         </div>
                     </div>
 
@@ -450,9 +593,16 @@ $active_variants = $stmt->fetchAll();
         const variantPriceEditor = document.getElementById('variant_price_editor');
         const variantPricesList = document.getElementById('variantPricesList');
         const variantHiddenInputs = document.getElementById('variantHiddenInputs');
+        const variantPricingPanel = document.getElementById('variantPricingPanel');
+        const variantToggleBtn = document.getElementById('variantToggleBtn');
         const hargaJualInput = document.getElementById('harga_jual');
         const variantMeta = {};
         let variantPrices = {};
+
+        function setVariantPanelCollapsed(collapsed) {
+            variantPricingPanel.classList.toggle('collapsed', !!collapsed);
+            variantToggleBtn.textContent = collapsed ? 'Tampilkan' : 'Sembunyikan';
+        }
 
         defaultVariantSelect.querySelectorAll('option').forEach(opt => {
             if (!opt.value) return;
@@ -577,7 +727,10 @@ $active_variants = $stmt->fetchAll();
             formAction.value = 'create';
             form.reset();
             document.getElementById('productId').value = '';
+            document.getElementById('is_transaction_product').checked = true;
+            document.getElementById('is_purchase_product').checked = true;
             resetVariantPrices();
+            setVariantPanelCollapsed(true);
             btnSubmit.innerHTML = '<i data-feather="save" style="width: 16px; height: 16px; display: inline-block; vertical-align: text-bottom; margin-right: 4px;"></i> Simpan Produk';
             feather.replace();
             modal.classList.add('active');
@@ -591,11 +744,17 @@ $active_variants = $stmt->fetchAll();
             document.getElementById('kode_barang').value  = product.kode_barang || '';
             document.getElementById('nama_barang').value  = product.nama_barang || '';
             document.getElementById('kategori').value     = product.kategori    || '';
+            document.getElementById('supplier_id').value  = product.supplier_id || '';
+            document.getElementById('is_transaction_product').checked = (parseInt(product.is_transaction_product) === 1);
+            document.getElementById('is_purchase_product').checked = (parseInt(product.is_purchase_product) === 1);
+            document.getElementById('unit_id').value      = product.unit_id     || '';
+            document.getElementById('unit_base_qty').value = product.unit_base_qty || 1;
             document.getElementById('harga_beli').value   = product.harga_beli  || 0;
             document.getElementById('harga_jual').value   = product.harga_jual  || 0;
             document.getElementById('stok').value         = product.stok        || 0;
 
             resetVariantPrices();
+            setVariantPanelCollapsed(true);
 
             // Fetch variant prices for this product
             fetch(`product_actions.php?action=get_prices&product_id=${product.id}`)
@@ -636,6 +795,11 @@ $active_variants = $stmt->fetchAll();
         // Tutup modal ESC
         document.addEventListener('keydown', function(event) {
             if (event.key === 'Escape' && modal.classList.contains('active')) closeModal();
+        });
+
+        variantToggleBtn.addEventListener('click', function() {
+            const isCollapsed = variantPricingPanel.classList.contains('collapsed');
+            setVariantPanelCollapsed(!isCollapsed);
         });
 
         // Auto-hide alert setelah 4 detik
