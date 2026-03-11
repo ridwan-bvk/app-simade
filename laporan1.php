@@ -160,7 +160,11 @@ function fetch_report_data(PDO $pdo, string $startDate, string $endDate, string 
             {$baseQtyExpr} AS base_qty_total,
             COALESCE(p.harga_beli, 0) AS harga_beli,
             (sti.qty * COALESCE(p.harga_beli, 0)) AS modal_total,
-            (sti.subtotal - (sti.qty * COALESCE(p.harga_beli, 0))) AS laba
+            (sti.subtotal - (sti.qty * COALESCE(p.harga_beli, 0))) AS laba,
+            st.subtotal AS transaction_subtotal,
+            COALESCE(st.discount, 0) AS discount,
+            COALESCE(st.downpayment, 0) AS downpayment,
+            (st.subtotal - COALESCE(st.discount, 0) - COALESCE(st.downpayment, 0)) AS sisa_bayar
          FROM sales_transaction_items sti
          INNER JOIN sales_transactions st ON st.id = sti.transaction_id
          LEFT JOIN products p ON p.id = sti.product_id
@@ -200,7 +204,7 @@ function fetch_report_data(PDO $pdo, string $startDate, string $endDate, string 
          FROM sales_transaction_items sti
          INNER JOIN sales_transactions st ON st.id = sti.transaction_id
          LEFT JOIN products p ON p.id = sti.product_id
-         WHERE {$rangeWhere}  AND st.status = 'paid'
+         WHERE {$rangeWhere} AND st.status = 'paid'
          GROUP BY sti.product_name, COALESCE(sti.variant_name, '-'), COALESCE(p.harga_beli, 0)
          ORDER BY laba_total DESC, omzet_total DESC"
     );
@@ -277,38 +281,80 @@ function output_csv_export(array $data, string $startDate, string $endDate, stri
     fputcsv($out, []);
 
     fputcsv($out, ['DETAIL TRANSAKSI']);
-    fputcsv($out, ['No', 'Waktu', 'Invoice', 'Pelanggan', 'Status', 'Produk', 'Varian', 'Qty', 'Satuan', 'Konversi Base', 'Total Base Qty', 'Harga Jual', 'Subtotal', 'Harga Beli', 'Modal', 'Laba']);
-    // group by invoice for numbering
-    $lastInvoiceCsv = null;
-    $noCsv = 0;
+    fputcsv($out, ['Waktu', 'Invoice', 'Pelanggan', 'Status', 'Produk', 'Varian', 'Qty', 'Satuan', 'Konversi Base', 'Total Base Qty', 'Harga Jual', 'Subtotal', 'Discount', 'Downpayment', 'Sisa Bayar', 'Harga Beli', 'Modal', 'Laba']);
+
+    // Totals accumulator
+    $totals = [
+        'qty' => 0.0,
+        'base_qty_total' => 0.0,
+        'subtotal' => 0.0,
+        'discount' => 0.0,
+        'downpayment' => 0.0,
+        'sisa_bayar' => 0.0,
+        'modal_total' => 0.0,
+        'laba' => 0.0,
+    ];
+
     foreach ($data['detail_rows'] as $row) {
-        $inv = (string)($row['invoice_no'] ?? '');
-        if ($inv !== $lastInvoiceCsv) {
-            $noCsv++;
-            $showNo = $noCsv;
-            $lastInvoiceCsv = $inv;
-        } else {
-            $showNo = '';
-        }
+        $qty = (float)($row['qty'] ?? 0);
+        $baseQty = (float)($row['base_qty_total'] ?? 0);
+    // use transaction-level subtotal for sisa calculation when available
+    $trxSubtotal = (float)($row['transaction_subtotal'] ?? $row['subtotal'] ?? 0);
+    $subtotal = (float)($row['subtotal'] ?? 0); // item subtotal
+    $discount = (float)($row['discount'] ?? 0);
+    $downpayment = (float)($row['downpayment'] ?? 0);
+    $sisa = (float)($row['sisa_bayar'] ?? ($trxSubtotal - $discount - $downpayment));
+        $modal = (float)($row['modal_total'] ?? 0);
+        $laba = (float)($row['laba'] ?? 0);
+
+        $totals['qty'] += $qty;
+        $totals['base_qty_total'] += $baseQty;
+    $totals['subtotal'] += $subtotal;
+    $totals['discount'] += $discount;
+        $totals['downpayment'] += $downpayment;
+        $totals['sisa_bayar'] += $sisa;
+        $totals['modal_total'] += $modal;
+        $totals['laba'] += $laba;
+
         fputcsv($out, [
-            $showNo,
             $row['transaction_at'] ?? '',
             $row['invoice_no'] ?? '',
             $row['customer_name'] ?? '',
             $row['status'] ?? '',
             $row['product_name'] ?? '',
             $row['variant_name'] ?? '',
-            $row['qty'] ?? 0,
+            $qty,
             $row['unit_symbol_snapshot'] ?? '',
             round((float)($row['unit_base_qty_snapshot'] ?? 0), 2),
-            round((float)($row['base_qty_total'] ?? 0), 2),
+            round($baseQty, 2),
             $row['price'] ?? 0,
-            $row['subtotal'] ?? 0,
+            $subtotal,
+            $discount,
+            $downpayment,
+            $sisa,
             $row['harga_beli'] ?? 0,
-            $row['modal_total'] ?? 0,
-            $row['laba'] ?? 0,
+            $modal,
+            $laba,
         ]);
     }
+
+    // Write totals row
+    fputcsv($out, []);
+    fputcsv($out, [
+        'TOTAL', '', '', '', '', '',
+        (string)$totals['qty'],
+        '',
+        round($totals['base_qty_total'], 2),
+        round($totals['base_qty_total'], 2),
+        '',
+        $totals['subtotal'],
+        $totals['discount'],
+        $totals['downpayment'],
+        $totals['sisa_bayar'],
+        '',
+        $totals['modal_total'],
+        $totals['laba'],
+    ]);
     fputcsv($out, []);
 
     fputcsv($out, ['REKAP HARIAN']);
@@ -362,37 +408,77 @@ function output_excel_export(array $data, string $startDate, string $endDate, st
     echo '<tr><td>Laba Kotor</td><td>' . (float)($data['laba_summary']['laba_kotor'] ?? 0) . '</td></tr>';
     echo '</table><br>';
 
-    echo '<table><tr><th colspan="16">Detail Transaksi</th></tr>';
-    echo '<tr><th>No</th><th>Waktu</th><th>Invoice</th><th>Pelanggan</th><th>Status</th><th>Produk</th><th>Varian</th><th>Qty</th><th>Satuan</th><th>Konversi Base</th><th>Total Base Qty</th><th>Harga Jual</th><th>Subtotal</th><th>Harga Beli</th><th>Modal</th><th>Laba</th></tr>';
-    // group numbering for invoice
-    $lastInvoiceExcel = null;
-    $noExcel = 0;
+    echo '<table><tr><th colspan="18">Detail Transaksi</th></tr>';
+    echo '<tr><th>Waktu</th><th>Invoice</th><th>Pelanggan</th><th>Status</th><th>Produk</th><th>Varian</th><th>Qty</th><th>Satuan</th><th>Konversi Base</th><th>Total Base Qty</th><th>Harga Jual</th><th>Subtotal</th><th>Discount</th><th>Downpayment</th><th>Sisa Bayar</th><th>Harga Beli</th><th>Modal</th><th>Laba</th></tr>';
+
+    // Totals for excel
+    $totQty = 0.0;
+    $totBaseQty = 0.0;
+    $totSubtotal = 0.0;
+    $totDiscount = 0.0;
+    $totDownpayment = 0.0;
+    $totSisa = 0.0;
+    $totModal = 0.0;
+    $totLaba = 0.0;
+
     foreach ($data['detail_rows'] as $row) {
-        $inv = (string)($row['invoice_no'] ?? '');
-        if ($inv !== $lastInvoiceExcel) {
-            $noExcel++;
-            $showNo = $noExcel;
-            $lastInvoiceExcel = $inv;
-        } else {
-            $showNo = '';
-        }
+        $qty = (float)($row['qty'] ?? 0);
+        $baseQty = (float)($row['base_qty_total'] ?? 0);
+    $trxSubtotal = (float)($row['transaction_subtotal'] ?? $row['subtotal'] ?? 0);
+    $subtotal = (float)($row['subtotal'] ?? 0);
+    $discount = (float)($row['discount'] ?? 0);
+    $downpayment = (float)($row['downpayment'] ?? 0);
+    $sisa = (float)($row['sisa_bayar'] ?? ($trxSubtotal - $discount - $downpayment));
+        $modal = (float)($row['modal_total'] ?? 0);
+        $laba = (float)($row['laba'] ?? 0);
+
+        $totQty += $qty;
+        $totBaseQty += $baseQty;
+    $totSubtotal += $subtotal;
+    $totDiscount += $discount;
+    $totDownpayment += $downpayment;
+    $totSisa += $sisa;
+        $totModal += $modal;
+        $totLaba += $laba;
+
         echo '<tr>';
-        echo '<td>' . htmlspecialchars((string)$showNo) . '</td>';
         echo '<td>' . htmlspecialchars((string)($row['transaction_at'] ?? '')) . '</td>';
         echo '<td>' . htmlspecialchars((string)($row['invoice_no'] ?? '')) . '</td>';
         echo '<td>' . htmlspecialchars((string)($row['customer_name'] ?? '')) . '</td>';
         echo '<td>' . htmlspecialchars((string)($row['status'] ?? '')) . '</td>';
         echo '<td>' . htmlspecialchars((string)($row['product_name'] ?? '')) . '</td>';
         echo '<td>' . htmlspecialchars((string)($row['variant_name'] ?? '')) . '</td>';
-        echo '<td>' . (float)($row['qty'] ?? 0) . '</td>';
+        echo '<td>' . $qty . '</td>';
         echo '<td>' . htmlspecialchars((string)($row['unit_symbol_snapshot'] ?? '')) . '</td>';
         echo '<td>' . round((float)($row['unit_base_qty_snapshot'] ?? 0), 2) . '</td>';
-        echo '<td>' . round((float)($row['base_qty_total'] ?? 0), 2) . '</td>';
-        echo '<td>' . (float)($row['price'] ?? 0) . '</td>';
-        echo '<td>' . (float)($row['subtotal'] ?? 0) . '</td>';
+        echo '<td>' . round($baseQty, 2) . '</td>';
+        echo '<td>' . $row['price'] . '</td>';
+    echo '<td>' . $subtotal . '</td>';
+    echo '<td>' . $discount . '</td>';
+    echo '<td>' . $downpayment . '</td>';
+    echo '<td>' . $sisa . '</td>';
         echo '<td>' . (float)($row['harga_beli'] ?? 0) . '</td>';
-        echo '<td>' . (float)($row['modal_total'] ?? 0) . '</td>';
-        echo '<td>' . (float)($row['laba'] ?? 0) . '</td>';
+        echo '<td>' . $modal . '</td>';
+        echo '<td>' . $laba . '</td>';
+        echo '</tr>';
+    }
+
+    // Totals row
+    if (count($data['detail_rows']) > 0) {
+        echo '<tr class="tfoot-total">';
+        echo '<td colspan="6">Total</td>';
+    echo '<td>' . $totQty . '</td>';
+    echo '<td></td>';
+    echo '<td>' . round($totBaseQty, 2) . '</td>';
+    echo '<td>' . round($totBaseQty, 2) . '</td>';
+    echo '<td></td>';
+    echo '<td>' . $totSubtotal . '</td>';
+    echo '<td>' . $totDiscount . '</td>';
+    echo '<td>' . $totDownpayment . '</td>';
+    echo '<td>' . $totSisa . '</td>';
+    echo '<td></td>';
+    echo '<td>' . $totModal . '</td>';
+    echo '<td>' . $totLaba . '</td>';
         echo '</tr>';
     }
     echo '</table><br>';
@@ -491,18 +577,61 @@ foreach ($labaRows as $lr) {
     $labaGrandTotal += (float)($lr['laba_total'] ?? 0);
 }
 
-// Detail totals (for Laporan Transaksi Detail)
+// Detail totals (for Laporan Transaksi Detail) grouped by transaction
+$detailGroups = [];
 $detailQtyTotal = 0.0;
 $detailBaseQtyTotal = 0.0;
 $detailSubtotalTotal = 0.0;
 $detailModalTotal = 0.0;
 $detailLabaTotal = 0.0;
+$detailDiscountTotal = 0.0;
+$detailDownpaymentTotal = 0.0;
+$detailSisaTotal = 0.0;
 foreach ($detailRows as $dr) {
-    $detailQtyTotal += (float)($dr['qty'] ?? 0);
-    $detailBaseQtyTotal += (float)($dr['base_qty_total'] ?? 0);
-    $detailSubtotalTotal += (float)($dr['subtotal'] ?? 0);
-    $detailModalTotal += (float)($dr['modal_total'] ?? 0);
-    $detailLabaTotal += (float)($dr['laba'] ?? 0);
+    $transactionId = (int)($dr['transaction_id'] ?? 0);
+    $transactionSubtotal = (float)($dr['transaction_subtotal'] ?? 0);
+    $transactionDiscount = (float)($dr['discount'] ?? 0);
+    $transactionDownpayment = (float)($dr['downpayment'] ?? 0);
+    $transactionSisa = (float)($dr['sisa_bayar'] ?? ($transactionSubtotal - $transactionDiscount - $transactionDownpayment));
+
+    if (!isset($detailGroups[$transactionId])) {
+        $detailGroups[$transactionId] = [
+            'transaction_at' => (string)($dr['transaction_at'] ?? ''),
+            'invoice_no' => (string)($dr['invoice_no'] ?? ''),
+            'customer_name' => (string)($dr['customer_name'] ?? 'Pelanggan Umum'),
+            'status' => (string)($dr['status'] ?? 'pending'),
+            'subtotal' => $transactionSubtotal,
+            'discount' => $transactionDiscount,
+            'downpayment' => $transactionDownpayment,
+            'sisa_bayar' => $transactionSisa,
+            'qty_total' => 0.0,
+            'base_qty_total' => 0.0,
+            'modal_total' => 0.0,
+            'laba_total' => 0.0,
+            'items' => [],
+        ];
+        $detailDiscountTotal += $transactionDiscount;
+        $detailDownpaymentTotal += $transactionDownpayment;
+        $detailSisaTotal += $transactionSisa;
+    }
+
+    $qty = (float)($dr['qty'] ?? 0);
+    $baseQty = (float)($dr['base_qty_total'] ?? 0);
+    $modal = (float)($dr['modal_total'] ?? 0);
+    $laba = (float)($dr['laba'] ?? 0);
+    $itemSubtotal = (float)($dr['subtotal'] ?? 0);
+
+    $detailGroups[$transactionId]['qty_total'] += $qty;
+    $detailGroups[$transactionId]['base_qty_total'] += $baseQty;
+    $detailGroups[$transactionId]['modal_total'] += $modal;
+    $detailGroups[$transactionId]['laba_total'] += $laba;
+    $detailGroups[$transactionId]['items'][] = $dr;
+
+    $detailQtyTotal += $qty;
+    $detailBaseQtyTotal += $baseQty;
+    $detailSubtotalTotal += $itemSubtotal;
+    $detailModalTotal += $modal;
+    $detailLabaTotal += $laba;
 }
 ?>
 <!DOCTYPE html>
@@ -651,10 +780,87 @@ foreach ($detailRows as $dr) {
             font-weight: 700;
             border-top: 2px solid #e5e7eb;
         }
+        .detail-group-head td {
+            background: linear-gradient(180deg, #f8fafc 0%, #eef6ff 100%);
+            color: #111827;
+            border-top: 2px solid #dbe7f5;
+            padding: 14px;
+        }
+        .detail-group-card {
+            display: grid;
+            grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+            gap: 14px;
+            align-items: start;
+        }
+        .detail-group-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .detail-group-title {
+            font-size: 15px;
+            font-weight: 700;
+            color: #0f172a;
+        }
+        .detail-group-subtitle {
+            font-size: 12px;
+            color: #64748b;
+        }
+        .detail-group-stats {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 8px;
+        }
+        .detail-stat {
+            border: 1px solid #dbe7f5;
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: 12px;
+            padding: 10px;
+        }
+        .detail-stat-label {
+            display: block;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: .06em;
+            color: #64748b;
+            margin-bottom: 4px;
+        }
+        .detail-stat-value {
+            font-size: 13px;
+            font-weight: 700;
+            color: #0f172a;
+        }
+        .detail-group-items td {
+            background: #fff;
+        }
+        .detail-group-items:nth-child(even) td {
+            background: #fcfcfd;
+        }
+        .detail-group-subtotal td {
+            background: #fffaf0;
+            font-weight: 700;
+            color: #7c2d12;
+            border-bottom: 2px solid #fed7aa;
+        }
+        .detail-group-subtotal-label {
+            font-size: 12px;
+            font-weight: 700;
+        }
+        .detail-group-subtotal-note {
+            display: block;
+            font-size: 11px;
+            font-weight: 500;
+            color: #9a3412;
+            margin-top: 3px;
+        }
         .badge.pending { background: #ffedd5; color: #9a3412; border: 1px solid #fdba74; }
         .badge.paid { background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; }
         @media (max-width: 1300px) {
             .filter-box { grid-template-columns: 1fr 1fr 1fr auto; }
+            .detail-group-card { grid-template-columns: 1fr; }
+            .detail-group-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
         @media (max-width: 1150px) {
             .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -664,6 +870,7 @@ foreach ($detailRows as $dr) {
             .cards { grid-template-columns: 1fr; }
             .filter-box { grid-template-columns: 1fr; }
             .report-page { padding: 16px; }
+            .detail-group-stats { grid-template-columns: 1fr; }
         }
         @media print {
             .side-nav, .filter-box, .section-header .text-muted { display: none !important; }
@@ -720,7 +927,7 @@ foreach ($detailRows as $dr) {
                 </select>
             </div>
             <button class="btn-primary" type="submit" style="height:40px;">Terapkan</button>
-            <button class="btn-secondary" type="button" style="height:40px;" onclick="openPrintChooser()">Cetak</button>
+            <button class="btn-secondary" type="button" style="height:40px;" onclick="window.print()">Cetak</button>
             <a class="btn-secondary" style="height:40px;display:inline-flex;align-items:center;justify-content:center;text-decoration:none;" href="?start_date=<?= urlencode($startDate) ?>&end_date=<?= urlencode($endDate) ?>&status=<?= urlencode($status) ?>&export=excel">Save as Excel</a>
             <a class="btn-secondary" style="height:40px;display:inline-flex;align-items:center;justify-content:center;text-decoration:none;" href="?start_date=<?= urlencode($startDate) ?>&end_date=<?= urlencode($endDate) ?>&status=<?= urlencode($status) ?>&export=csv">Save as CSV</a>
         </form>
@@ -757,17 +964,16 @@ foreach ($detailRows as $dr) {
             <?php endif; ?>
         </div>
 
-    <details id="panel-detail" class="panel" open>
+        <details class="panel" open>
             <summary class="panel-head">
                 <span>Laporan Transaksi Detail</span>
                 <span class="panel-toggle">Klik untuk collapse/expand</span>
             </summary>
             <div class="panel-body">
             <div class="table-wrap">
-                <table class="table" style="min-width:1240px;">
+                <table class="table" data-grouped="1" style="min-width:980px;">
                     <thead>
                     <tr>
-                        <th class="sortable-th" data-sort-type="num">No <span class="sort-icon">↕</span></th>
                         <th class="sortable-th" data-sort-type="date">Waktu <span class="sort-icon">↕</span></th>
                         <th class="sortable-th" data-sort-type="text">Invoice <span class="sort-icon">↕</span></th>
                         <th class="sortable-th" data-sort-type="text">Pelanggan <span class="sort-icon">↕</span></th>
@@ -792,57 +998,87 @@ foreach ($detailRows as $dr) {
                         <th class="num sortable-th" data-sort-type="num">Total Base Qty <span class="sort-icon">↕</span></th>
                         <th class="num sortable-th" data-sort-type="num">Harga Jual <span class="sort-icon">↕</span></th>
                         <th class="num sortable-th" data-sort-type="num">Subtotal <span class="sort-icon">↕</span></th>
+                        <th class="num sortable-th" data-sort-type="num">Downpayment (DP) <span class="sort-icon">↕</span></th>
+                        <th class="num sortable-th" data-sort-type="num">Sisa Bayar <span class="sort-icon">↕</span></th>
                         <th class="num sortable-th" data-sort-type="num">Harga Beli <span class="sort-icon">↕</span></th>
                         <th class="num sortable-th" data-sort-type="num">Modal <span class="sort-icon">↕</span></th>
                         <th class="num sortable-th" data-sort-type="num">Laba <span class="sort-icon">↕</span></th>
                     </tr>
                     </thead>
                     <tbody id="detailBody">
-                    <?php if (empty($detailRows)): ?>
-                        <tr><td colspan="16" style="text-align:center;color:var(--text-muted);padding:16px;">Tidak ada data transaksi.</td></tr>
+                    <?php if (empty($detailGroups)): ?>
+                        <tr><td colspan="11" style="text-align:center;color:var(--text-muted);padding:16px;">Tidak ada data transaksi.</td></tr>
                     <?php else: ?>
-                        <?php
-                        // invoice grouping for numbering
-                        $lastInvoiceWeb = null;
-                        $noWeb = 0;
-                        ?>
-                        <?php foreach ($detailRows as $row): ?>
-                            <?php
-                                $inv = (string)($row['invoice_no'] ?? '');
-                                if ($inv !== $lastInvoiceWeb) {
-                                    $noWeb++;
-                                    $showNo = $noWeb;
-                                    $lastInvoiceWeb = $inv;
-                                } else {
-                                    $showNo = '';
-                                }
-                            ?>
-                            <tr>
-                                <td class="num"><?= $showNo === '' ? '' : number_format($showNo, 0, ',', '.') ?></td>
-                                <td><?= htmlspecialchars((string)$row['transaction_at']) ?></td>
-                                <td><?= htmlspecialchars((string)$row['invoice_no']) ?></td>
-                                <td><?= htmlspecialchars((string)$row['customer_name']) ?></td>
-                                <td><span class="badge <?= $row['status'] === 'paid' ? 'paid' : 'pending' ?>">
-                                    <?= $row['status'] === 'paid' ? 'Paid' : 'Pending' ?></span></td>
-                                <td><?= htmlspecialchars((string)$row['product_name']) ?></td>
-                                <td><?= htmlspecialchars((string)$row['variant_name']) ?></td>
-                                <td class="num"><?= number_format((float)$row['qty'], 0, ',', '.') ?></td>
-                                <td class="num"><?= htmlspecialchars((string)($row['unit_symbol_snapshot'] ?? '')) ?></td>
-                                <td class="num"><?= number_format((float)($row['unit_base_qty_snapshot'] ?? 0), 2, ',', '.') ?></td>
-                                <td class="num"><?= number_format((float)($row['base_qty_total'] ?? 0), 2, ',', '.') ?></td>
-                                <td class="num"><?= rupiah($row['price']) ?></td>
-                                <td class="num"><?= rupiah($row['subtotal']) ?></td>
-                                <td class="num"><?= rupiah($row['harga_beli']) ?></td>
-                                <td class="num"><?= rupiah($row['modal_total']) ?></td>
-                                <td class="num"><?= rupiah($row['laba']) ?></td>
+                        <?php foreach ($detailGroups as $group): ?>
+                            <tr class="detail-group-head summary-row">
+                                <td colspan="11">
+                                    <div class="detail-group-card">
+                                        <div>
+                                            <div class="detail-group-meta">
+                                                <span class="badge <?= $group['status'] === 'paid' ? 'paid' : 'pending' ?>"><?= $group['status'] === 'paid' ? 'Paid' : 'Pending' ?></span>
+                                                <span><strong><?= htmlspecialchars($group['invoice_no']) ?></strong></span>
+                                            </div>
+                                            <div class="detail-group-title"><?= htmlspecialchars($group['customer_name']) ?></div>
+                                            <div class="detail-group-subtitle">Waktu transaksi: <?= htmlspecialchars($group['transaction_at']) ?></div>
+                                        </div>
+                                        <div class="detail-group-stats">
+                                            <div class="detail-stat">
+                                                <span class="detail-stat-label">Subtotal</span>
+                                                <span class="detail-stat-value"><?= rupiah($group['subtotal']) ?></span>
+                                            </div>
+                                            <div class="detail-stat">
+                                                <span class="detail-stat-label">Diskon</span>
+                                                <span class="detail-stat-value"><?= rupiah($group['discount']) ?></span>
+                                            </div>
+                                            <div class="detail-stat">
+                                                <span class="detail-stat-label">DP</span>
+                                                <span class="detail-stat-value"><?= rupiah($group['downpayment']) ?></span>
+                                            </div>
+                                            <div class="detail-stat">
+                                                <span class="detail-stat-label">Sisa Bayar</span>
+                                                <span class="detail-stat-value"><?= rupiah($group['sisa_bayar']) ?></span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </td>
+                            </tr>
+                            <?php foreach ($group['items'] as $row): ?>
+                                <tr class="detail-group-items">
+                                    <td><?= htmlspecialchars((string)$row['product_name']) ?></td>
+                                    <td><?= htmlspecialchars((string)$row['variant_name']) ?></td>
+                                    <td class="num"><?= number_format((float)$row['qty'], 0, ',', '.') ?></td>
+                                    <td class="num"><?= htmlspecialchars((string)($row['unit_symbol_snapshot'] ?? '')) ?></td>
+                                    <td class="num"><?= number_format((float)($row['unit_base_qty_snapshot'] ?? 0), 2, ',', '.') ?></td>
+                                    <td class="num"><?= number_format((float)($row['base_qty_total'] ?? 0), 2, ',', '.') ?></td>
+                                    <td class="num"><?= rupiah($row['price']) ?></td>
+                                    <td class="num"><?= rupiah($row['subtotal']) ?></td>
+                                    <td class="num"><?= rupiah($row['harga_beli']) ?></td>
+                                    <td class="num"><?= rupiah($row['modal_total']) ?></td>
+                                    <td class="num"><?= rupiah($row['laba']) ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                            <tr class="detail-group-subtotal summary-row">
+                                <td colspan="2">
+                                    <span class="detail-group-subtotal-label">Total Item Invoice</span>
+                                    <span class="detail-group-subtotal-note"><?= htmlspecialchars($group['invoice_no']) ?></span>
+                                </td>
+                                <td class="num"><?= number_format($group['qty_total'], 0, ',', '.') ?></td>
+                                <td class="num">-</td>
+                                <td class="num">-</td>
+                                <td class="num"><?= number_format($group['base_qty_total'], 2, ',', '.') ?></td>
+                                <td class="num">-</td>
+                                <td class="num"><?= rupiah($group['subtotal']) ?></td>
+                                <td class="num">-</td>
+                                <td class="num"><?= rupiah($group['modal_total']) ?></td>
+                                <td class="num"><?= rupiah($group['laba_total']) ?></td>
                             </tr>
                         <?php endforeach; ?>
                     <?php endif; ?>
                     </tbody>
-                    <?php if (!empty($detailRows)): ?>
+                    <?php if (!empty($detailGroups)): ?>
                     <tfoot>
                         <tr class="tfoot-total">
-                            <td colspan="6">Total</td>
+                            <td colspan="2">Grand Total</td>
                             <td class="num"><?= number_format($detailQtyTotal, 0, ',', '.') ?></td>
                             <td class="num">-</td>
                             <td class="num">-</td>
@@ -853,6 +1089,14 @@ foreach ($detailRows as $dr) {
                             <td class="num"><?= rupiah($detailModalTotal) ?></td>
                             <td class="num"><?= rupiah($detailLabaTotal) ?></td>
                         </tr>
+                        <tr class="tfoot-total">
+                            <td colspan="11">
+                                Ringkasan Transaksi:
+                                Diskon <?= rupiah($detailDiscountTotal) ?> |
+                                DP <?= rupiah($detailDownpaymentTotal) ?> |
+                                Sisa Bayar <?= rupiah($detailSisaTotal) ?>
+                            </td>
+                        </tr>
                     </tfoot>
                     <?php endif; ?>
                 </table>
@@ -860,7 +1104,7 @@ foreach ($detailRows as $dr) {
             </div>
         </details>
 
-    <details id="panel-rekap" class="panel">
+        <details class="panel">
             <summary class="panel-head">
                 <span>Laporan Transaksi Rekap (Harian)</span>
                 <span class="panel-toggle">Klik untuk collapse/expand</span>
@@ -897,7 +1141,7 @@ foreach ($detailRows as $dr) {
             </div>
         </details>
 
-    <details id="panel-laba" class="panel">
+        <details class="panel">
             <summary class="panel-head">
                 <span>Laporan Transaksi Laba (Per Produk/Varian)</span>
                 <span class="panel-toggle">Klik untuk collapse/expand</span>
@@ -959,92 +1203,7 @@ foreach ($detailRows as $dr) {
         </details>
     </main>
 </div>
-<!-- Print chooser modal -->
-<div id="printChooser" style="display:none;position:fixed;inset:0;align-items:center;justify-content:center;background:rgba(0,0,0,0.4);z-index:1200;">
-    <div style="background:#fff;padding:18px;border-radius:10px;min-width:320px;max-width:90%;box-shadow:0 6px 20px rgba(0,0,0,0.2);">
-        <h3 style="margin:0 0 10px 0;font-size:16px;">Pilih laporan untuk dicetak</h3>
-        <div style="margin-bottom:12px;">
-            <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="print_detail" checked> <span>Laporan Transaksi Detail</span></label>
-            <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="print_rekap" checked> <span>Laporan Transaksi Rekap (Harian)</span></label>
-            <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="print_laba" checked> <span>Laporan Transaksi Laba</span></label>
-        </div>
-        <div style="display:flex;gap:8px;justify-content:flex-end;">
-            <button type="button" class="btn-secondary" onclick="closePrintChooser()">Batal</button>
-            <button type="button" class="btn-primary" onclick="doPrintSelected()">Cetak</button>
-        </div>
-    </div>
-</div>
-
-<style>
-@media print {
-    .print-hidden { display: none !important; }
-    #printChooser { display: none !important; }
-}
-</style>
 <script>
-function openPrintChooser() {
-    const m = document.getElementById('printChooser');
-    if (!m) return; 
-    // ensure visible and on top
-    m.style.display = 'flex';
-    m.style.zIndex = '99999';
-    m.style.alignItems = 'center';
-    m.style.justifyContent = 'center';
-    // focus first checkbox for accessibility
-    const cb = document.getElementById('print_detail');
-    if (cb) cb.focus();
-}
-
-function closePrintChooser() {
-    const m = document.getElementById('printChooser');
-    if (!m) return; m.style.display = 'none';
-}
-
-function doPrintSelected() {
-    const detail = document.getElementById('print_detail').checked;
-    const rekap = document.getElementById('print_rekap').checked;
-    const laba = document.getElementById('print_laba').checked;
-
-    if (!detail && !rekap && !laba) {
-        alert('Pilih setidaknya satu laporan untuk dicetak.');
-        return;
-    }
-
-    // targets
-    const pd = document.getElementById('panel-detail');
-    const pr = document.getElementById('panel-rekap');
-    const pl = document.getElementById('panel-laba');
-
-    // hide those not selected by adding class print-hidden
-    if (pd) { if (!detail) pd.classList.add('print-hidden'); else pd.classList.remove('print-hidden'); }
-    if (pr) { if (!rekap) pr.classList.add('print-hidden'); else pr.classList.remove('print-hidden'); }
-    if (pl) { if (!laba) pl.classList.add('print-hidden'); else pl.classList.remove('print-hidden'); }
-
-    // hide chooser modal itself
-    closePrintChooser();
-
-    // ensure we restore after printing
-    function restore() {
-        if (pd) pd.classList.remove('print-hidden');
-        if (pr) pr.classList.remove('print-hidden');
-        if (pl) pl.classList.remove('print-hidden');
-        window.removeEventListener('afterprint', restore);
-    }
-    window.addEventListener('afterprint', restore);
-
-    // call print. Some browsers may ignore the first call when invoked programmatically; call twice with small delay as fallback.
-    try {
-        window.print();
-        setTimeout(() => window.print(), 600);
-    } catch (e) {
-        // fallback: still try
-        setTimeout(() => { try { window.print(); } catch (_) {} }, 200);
-    }
-
-    // safety restore in case afterprint isn't fired by the browser
-    setTimeout(restore, 3000);
-}
-
 function parseNum(text) {
     const clean = String(text || '')
         .replace(/[^0-9,.-]/g, '')
@@ -1060,9 +1219,59 @@ function parseDate(text) {
     return Number.isNaN(t) ? 0 : t;
 }
 
+function ensureDetailDiscountHeader() {
+    const detailTable = document.querySelector('#detailBody')?.closest('table');
+    const headerRow = detailTable?.querySelector('thead tr');
+    if (!headerRow) return;
+    if (headerRow.children.length >= 18) return;
+
+    const subtotalHeader = headerRow.children[11];
+    if (!subtotalHeader) return;
+
+    const discountHeader = document.createElement('th');
+    discountHeader.className = 'num sortable-th';
+    discountHeader.setAttribute('data-sort-type', 'num');
+    discountHeader.innerHTML = 'Diskon <span class="sort-icon">↕</span>';
+    subtotalHeader.insertAdjacentElement('afterend', discountHeader);
+}
+
+function formatGroupedDetailHeader() {
+    const detailTable = document.querySelector('#detailBody')?.closest('table');
+    const headerRow = detailTable?.querySelector('thead tr');
+    if (!detailTable || !headerRow || detailTable.dataset.grouped !== '1') return;
+
+    const refreshForm = headerRow.querySelector('form');
+    const headers = [
+        { label: 'Produk' },
+        { label: 'Varian' },
+        { label: 'Qty', className: 'num' },
+        { label: 'Satuan', className: 'num', withForm: true },
+        { label: 'Konversi Base', className: 'num' },
+        { label: 'Total Base Qty', className: 'num' },
+        { label: 'Harga Jual', className: 'num' },
+        { label: 'Subtotal Item', className: 'num' },
+        { label: 'Harga Beli', className: 'num' },
+        { label: 'Modal', className: 'num' },
+        { label: 'Laba', className: 'num' },
+    ];
+
+    headerRow.innerHTML = '';
+    headers.forEach((item) => {
+        const th = document.createElement('th');
+        if (item.className) th.className = item.className;
+        th.append(document.createTextNode(item.label));
+        if (item.withForm && refreshForm) {
+            th.append(document.createTextNode(' '));
+            th.append(refreshForm);
+        }
+        headerRow.appendChild(th);
+    });
+}
+
 function initDetailSorting() {
     const table = document.querySelector('.panel .table');
     if (!table) return;
+    if (table.dataset.grouped === '1') return;
     const tbody = document.getElementById('detailBody');
     if (!tbody) return;
     const headers = table.querySelectorAll('thead th.sortable-th');
@@ -1117,6 +1326,7 @@ function initDetailSorting() {
 }
 
 feather.replace();
+formatGroupedDetailHeader();
 initDetailSorting();
 </script>
 </body>

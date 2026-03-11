@@ -95,6 +95,12 @@ function ensure_purchase_tables(PDO $pdo): void
                 ON DELETE RESTRICT
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
     );
+
+    // add proof_file column if missing
+    $hasProof = $pdo->query("SHOW COLUMNS FROM purchase_orders LIKE 'proof_file'")->fetch(PDO::FETCH_ASSOC);
+    if (!$hasProof) {
+        $pdo->exec("ALTER TABLE purchase_orders ADD COLUMN proof_file VARCHAR(255) NULL AFTER notes");
+    }
 }
 
 function recalc_purchase_status(PDO $pdo, int $purchaseId): void
@@ -175,13 +181,19 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     json_error_purchase(405, 'Method tidak diizinkan.');
 }
 
-$raw = file_get_contents('php://input');
-$payload = json_decode($raw, true);
-if (!is_array($payload)) {
-    json_error_purchase(400, 'Payload tidak valid.');
+// Support JSON payloads and multipart/form-data (for file uploads)
+if (!empty($_FILES) || (isset($_POST['action']) && strpos(strtolower($_SERVER['CONTENT_TYPE'] ?? ''), 'multipart/form-data') !== false)) {
+    // multipart/form-data upload path
+    $action = (string)($_POST['action'] ?? '');
+    $payload = $_POST; // minimal mapping for handler usage
+} else {
+    $raw = file_get_contents('php://input');
+    $payload = json_decode($raw, true);
+    if (!is_array($payload)) {
+        json_error_purchase(400, 'Payload tidak valid.');
+    }
+    $action = (string)($payload['action'] ?? '');
 }
-
-$action = (string)($payload['action'] ?? '');
 try {
     $pdo->beginTransaction();
 
@@ -321,6 +333,181 @@ try {
             ':id' => $purchaseId,
         ]);
         recalc_purchase_status($pdo, $purchaseId);
+
+        $pdo->commit();
+        echo json_encode(['success' => true]);
+        exit;
+    }
+
+    if ($action === 'upload_proof') {
+        // expects multipart/form-data with 'purchase_id' and file field 'proof'
+        $purchaseId = (int)($_POST['purchase_id'] ?? 0);
+        if ($purchaseId <= 0) {
+            json_error_purchase(422, 'ID pembelian tidak valid.');
+        }
+        if (empty($_FILES['proof']) || !is_uploaded_file($_FILES['proof']['tmp_name'])) {
+            json_error_purchase(422, 'File bukti tidak ditemukan.');
+        }
+
+        $file = $_FILES['proof'];
+        $allowed = ['image/png','image/jpeg','application/pdf'];
+        if (!in_array($file['type'], $allowed)) {
+            // allow by extension fallback
+            $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+            if (!in_array($ext, ['png','jpg','jpeg','pdf'])) {
+                json_error_purchase(422, 'Tipe file tidak diperbolehkan. (png/jpg/pdf)');
+            }
+        }
+
+        $uploadsDir = __DIR__ . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'purchase_proofs';
+        if (!is_dir($uploadsDir)) mkdir($uploadsDir, 0755, true);
+        $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
+        $fname = 'po_' . $purchaseId . '_' . time() . '_' . random_int(1000,9999) . '.' . $ext;
+        $dest = $uploadsDir . DIRECTORY_SEPARATOR . $fname;
+
+        if (!move_uploaded_file($file['tmp_name'], $dest)) {
+            json_error_purchase(500, 'Gagal menyimpan file.');
+        }
+
+        // store relative web path
+        $webPath = 'uploads/purchase_proofs/' . $fname;
+        $up = $pdo->prepare('UPDATE purchase_orders SET proof_file = :pf WHERE id = :id');
+        $up->execute([':pf' => $webPath, ':id' => $purchaseId]);
+
+        $pdo->commit();
+        echo json_encode(['success' => true, 'path' => $webPath]);
+        exit;
+    }
+
+    if ($action === 'update_purchase') {
+        $purchaseId = (int)($payload['purchase_id'] ?? 0);
+        $supplierId = (int)($payload['supplier_id'] ?? 0);
+        $invoiceDate = trim((string)($payload['invoice_date'] ?? date('Y-m-d')));
+        $dueDate = trim((string)($payload['due_date'] ?? ''));
+        $notes = trim((string)($payload['notes'] ?? ''));
+        $items = is_array($payload['items'] ?? null) ? $payload['items'] : [];
+        if ($purchaseId <= 0 || $supplierId <= 0) {
+            json_error_purchase(422, 'Data tidak valid untuk pembaruan.');
+        }
+
+        // lock purchase row
+        $headStmt = $pdo->prepare('SELECT * FROM purchase_orders WHERE id = :id FOR UPDATE');
+        $headStmt->execute([':id' => $purchaseId]);
+        $head = $headStmt->fetch(PDO::FETCH_ASSOC);
+        if (!$head) {
+            json_error_purchase(404, 'Invoice pembelian tidak ditemukan.');
+        }
+
+        // revert stock for old items
+        $oldItemsStmt = $pdo->prepare('SELECT * FROM purchase_order_items WHERE purchase_id = :id');
+        $oldItemsStmt->execute([':id' => $purchaseId]);
+        $oldItems = $oldItemsStmt->fetchAll(PDO::FETCH_ASSOC);
+        $updateStockDec = $pdo->prepare('UPDATE products SET stok = stok - :qty WHERE id = :id');
+        foreach ($oldItems as $oit) {
+            if (!empty($oit['product_id'])) {
+                $updateStockDec->execute([':qty' => (float)$oit['qty'], ':id' => (int)$oit['product_id']]);
+            }
+        }
+
+        // remove old items
+        $delItems = $pdo->prepare('DELETE FROM purchase_order_items WHERE purchase_id = :id');
+        $delItems->execute([':id' => $purchaseId]);
+
+        // prepare insert for new items and add stock
+        $itemStmt = $pdo->prepare(
+            'INSERT INTO purchase_order_items
+                (purchase_id, product_id, product_code, product_name, qty, unit_cost, subtotal)
+             VALUES
+                (:purchase_id, :product_id, :product_code, :product_name, :qty, :unit_cost, :subtotal)'
+        );
+        $updateStockInc = $pdo->prepare('UPDATE products SET stok = stok + :qty WHERE id = :id');
+
+        $subtotal = 0.0;
+        $cleanItems = [];
+        foreach ($items as $item) {
+            $qty = (float)($item['qty'] ?? 0);
+            $unitCost = (float)($item['unit_cost'] ?? 0);
+            if ($qty <= 0 || $unitCost < 0) continue;
+            $lineSubtotal = $qty * $unitCost;
+            $subtotal += $lineSubtotal;
+            $cleanItems[] = [
+                'product_id' => isset($item['product_id']) ? (int)$item['product_id'] : null,
+                'product_code' => (string)($item['product_code'] ?? ''),
+                'product_name' => (string)($item['product_name'] ?? ''),
+                'qty' => $qty,
+                'unit_cost' => $unitCost,
+                'subtotal' => $lineSubtotal,
+            ];
+        }
+
+        if (empty($cleanItems)) {
+            json_error_purchase(422, 'Item pembelian tidak valid.');
+        }
+
+        // insert new items and increment stock
+        foreach ($cleanItems as $it) {
+            $itemStmt->execute([
+                ':purchase_id' => $purchaseId,
+                ':product_id' => $it['product_id'] ?: null,
+                ':product_code' => $it['product_code'] !== '' ? $it['product_code'] : null,
+                ':product_name' => $it['product_name'],
+                ':qty' => $it['qty'],
+                ':unit_cost' => $it['unit_cost'],
+                ':subtotal' => $it['subtotal'],
+            ]);
+            if ($it['product_id']) {
+                $updateStockInc->execute([':qty' => $it['qty'], ':id' => $it['product_id']]);
+            }
+        }
+
+        // update purchase header totals
+        $up = $pdo->prepare('UPDATE purchase_orders SET supplier_id = :supplier_id, invoice_date = :invoice_date, due_date = :due_date, subtotal = :subtotal, total = :total, notes = :notes, updated_at = CURRENT_TIMESTAMP WHERE id = :id');
+        $up->execute([
+            ':supplier_id' => $supplierId,
+            ':invoice_date' => $invoiceDate,
+            ':due_date' => $dueDate !== '' ? $dueDate : null,
+            ':subtotal' => $subtotal,
+            ':total' => $subtotal,
+            ':notes' => $notes !== '' ? $notes : null,
+            ':id' => $purchaseId,
+        ]);
+
+        // recalc status (will cap paid_amount if needed)
+        recalc_purchase_status($pdo, $purchaseId);
+
+        $pdo->commit();
+        echo json_encode(['success' => true]);
+        exit;
+    }
+
+    if ($action === 'delete_purchase') {
+        $purchaseId = (int)($payload['purchase_id'] ?? 0);
+        if ($purchaseId <= 0) {
+            json_error_purchase(422, 'ID pembelian tidak valid.');
+        }
+
+        // prevent deletion if payments exist
+        $payCntStmt = $pdo->prepare('SELECT COUNT(*) FROM supplier_payments WHERE purchase_id = :id');
+        $payCntStmt->execute([':id' => $purchaseId]);
+        $payCount = (int)$payCntStmt->fetchColumn();
+        if ($payCount > 0) {
+            json_error_purchase(422, 'Tidak dapat menghapus PO yang sudah memiliki pembayaran. Hapus/rollback pembayaran terlebih dahulu.');
+        }
+
+        // fetch items to revert stock
+        $itemsStmt = $pdo->prepare('SELECT * FROM purchase_order_items WHERE purchase_id = :id');
+        $itemsStmt->execute([':id' => $purchaseId]);
+        $items = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
+        $updateStockDec = $pdo->prepare('UPDATE products SET stok = stok - :qty WHERE id = :id');
+        foreach ($items as $it) {
+            if (!empty($it['product_id'])) {
+                $updateStockDec->execute([':qty' => (float)$it['qty'], ':id' => (int)$it['product_id']]);
+            }
+        }
+
+        // delete purchase (items and payments will cascade)
+        $del = $pdo->prepare('DELETE FROM purchase_orders WHERE id = :id');
+        $del->execute([':id' => $purchaseId]);
 
         $pdo->commit();
         echo json_encode(['success' => true]);

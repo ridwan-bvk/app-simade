@@ -40,6 +40,8 @@ function ensure_transaction_tables(PDO $pdo): void
             transaction_at DATETIME NOT NULL,
             customer_name VARCHAR(150) NULL,
             subtotal DECIMAL(15,2) NOT NULL DEFAULT 0,
+            discount DECIMAL(15,2) NOT NULL DEFAULT 0,
+            downpayment DECIMAL(15,2) NOT NULL DEFAULT 0,
             total DECIMAL(15,2) NOT NULL DEFAULT 0,
             paid_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
             change_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
@@ -81,6 +83,14 @@ function ensure_transaction_tables(PDO $pdo): void
     $hasPrintedAt = $pdo->query("SHOW COLUMNS FROM sales_transactions LIKE 'printed_at'")->fetch(PDO::FETCH_ASSOC);
     if (!$hasPrintedAt) {
         $pdo->exec("ALTER TABLE sales_transactions ADD COLUMN printed_at DATETIME NULL AFTER is_printed");
+    }
+    $hasDiscount = $pdo->query("SHOW COLUMNS FROM sales_transactions LIKE 'discount'")->fetch(PDO::FETCH_ASSOC);
+    if (!$hasDiscount) {
+        $pdo->exec("ALTER TABLE sales_transactions ADD COLUMN discount DECIMAL(15,2) NOT NULL DEFAULT 0 AFTER subtotal");
+    }
+    $hasDownpayment = $pdo->query("SHOW COLUMNS FROM sales_transactions LIKE 'downpayment'")->fetch(PDO::FETCH_ASSOC);
+    if (!$hasDownpayment) {
+        $pdo->exec("ALTER TABLE sales_transactions ADD COLUMN downpayment DECIMAL(15,2) NOT NULL DEFAULT 0 AFTER discount");
     }
     $hasUnitIdSnapshot = $pdo->query("SHOW COLUMNS FROM sales_transaction_items LIKE 'unit_id_snapshot'")->fetch(PDO::FETCH_ASSOC);
     if (!$hasUnitIdSnapshot) {
@@ -247,7 +257,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             }
             $offset = ($page - 1) * $pageSize;
 
-            $listSql = "SELECT id, invoice_no, status, is_printed, printed_at, transaction_at, customer_name, total, paid_amount
+        $listSql = "SELECT id, invoice_no, status, is_printed, printed_at, transaction_at, customer_name, subtotal, discount, downpayment, total, paid_amount
                     FROM sales_transactions
                     WHERE {$whereSql}
                     ORDER BY id DESC
@@ -322,13 +332,17 @@ try {
             $stmt = $pdo->prepare(
                 'UPDATE sales_transactions
                  SET customer_name = :customer_name, subtotal = :subtotal, total = :total,
-                     paid_amount = 0, change_amount = 0, status = "pending", transaction_at = NOW()
+                    paid_amount = :paid, change_amount = :change, discount = :discount, downpayment = :downpayment, status = "pending", transaction_at = NOW()
                  WHERE id = :id'
             );
             $stmt->execute([
                 ':customer_name' => $customerName !== '' ? $customerName : null,
                 ':subtotal' => $subtotal,
                 ':total' => $total,
+                ':paid' => $paid,
+                ':change' => $change,
+                ':discount' => (float)($payload['discount'] ?? 0),
+                ':downpayment' => (float)($payload['downpayment'] ?? 0),
                 ':id' => $draftId,
             ]);
             $transactionId = $draftId;
@@ -336,15 +350,19 @@ try {
             $invoiceNo = 'DRF-' . date('YmdHis') . '-' . random_int(100, 999);
             $stmt = $pdo->prepare(
                 'INSERT INTO sales_transactions
-                    (invoice_no, status, is_printed, printed_at, transaction_at, customer_name, subtotal, total, paid_amount, change_amount)
+                    (invoice_no, status, is_printed, printed_at, transaction_at, customer_name, subtotal, discount, downpayment, total, paid_amount, change_amount)
                  VALUES
-                    (:invoice_no, "pending", 0, NULL, NOW(), :customer_name, :subtotal, :total, 0, 0)'
+                    (:invoice_no, "pending", 0, NULL, NOW(), :customer_name, :subtotal, :discount, :downpayment, :total, :paid, :change)'
             );
             $stmt->execute([
                 ':invoice_no' => $invoiceNo,
                 ':customer_name' => $customerName !== '' ? $customerName : null,
                 ':subtotal' => $subtotal,
+                ':discount' => (float)($payload['discount'] ?? 0),
+                ':downpayment' => (float)($payload['downpayment'] ?? 0),
                 ':total' => $total,
+                ':paid' => $paid,
+                ':change' => $change,
             ]);
             $transactionId = (int)$pdo->lastInsertId();
         }
@@ -368,7 +386,7 @@ try {
             $stmt = $pdo->prepare(
                 'UPDATE sales_transactions
                  SET status = "paid", customer_name = :customer_name, subtotal = :subtotal, total = :total,
-                     paid_amount = :paid, change_amount = :change, transaction_at = NOW(),
+                    paid_amount = :paid, change_amount = :change, discount = :discount, downpayment = :downpayment, transaction_at = NOW(),
                      invoice_no = CASE WHEN invoice_no LIKE "DRF-%" THEN :new_invoice ELSE invoice_no END
                  WHERE id = :id'
             );
@@ -378,6 +396,8 @@ try {
                 ':total' => $total,
                 ':paid' => $paid,
                 ':change' => $change,
+                ':discount' => (float)($payload['discount'] ?? 0),
+                ':downpayment' => (float)($payload['downpayment'] ?? 0),
                 ':new_invoice' => 'TRX-' . date('YmdHis') . '-' . random_int(100, 999),
                 ':id' => $draftId,
             ]);
@@ -390,14 +410,16 @@ try {
             $invoiceNo = 'TRX-' . date('YmdHis') . '-' . random_int(100, 999);
             $stmt = $pdo->prepare(
                 'INSERT INTO sales_transactions
-                    (invoice_no, status, is_printed, printed_at, transaction_at, customer_name, subtotal, total, paid_amount, change_amount)
+                    (invoice_no, status, is_printed, printed_at, transaction_at, customer_name, subtotal, discount, downpayment, total, paid_amount, change_amount)
                  VALUES
-                    (:invoice_no, "paid", 0, NULL, NOW(), :customer_name, :subtotal, :total, :paid, :change)'
+                    (:invoice_no, "paid", 0, NULL, NOW(), :customer_name, :subtotal, :discount, :downpayment, :total, :paid, :change)'
             );
             $stmt->execute([
                 ':invoice_no' => $invoiceNo,
                 ':customer_name' => $customerName !== '' ? $customerName : null,
                 ':subtotal' => $subtotal,
+                ':discount' => (float)($payload['discount'] ?? 0),
+                ':downpayment' => (float)($payload['downpayment'] ?? 0),
                 ':total' => $total,
                 ':paid' => $paid,
                 ':change' => $change,

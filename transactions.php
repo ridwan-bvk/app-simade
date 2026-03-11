@@ -350,6 +350,9 @@ foreach ($templateRows as $templateRow) {
                                 <th>Pelanggan</th>
                                 <th>Waktu</th>
                                 <th>Total</th>
+                                <th>Diskon</th>
+                                <th>Uang Muka</th>
+                                <th>Sisa Bayar</th>
                                 <th>Status</th>
                                 <th>Flag Cetak</th>
                                 <th>Aksi</th>
@@ -357,7 +360,7 @@ foreach ($templateRows as $templateRow) {
                         </thead>
                         <tbody id="txTbody">
                             <tr>
-                                <td colspan="8" style="text-align:center;color:var(--text-muted);">Memuat data...</td>
+                                <td colspan="11" style="text-align:center;color:var(--text-muted);">Memuat data...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -469,7 +472,7 @@ foreach ($templateRows as $templateRow) {
             txEndDate.value = today;
         }
         async function loadTransactions() {
-            txTbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);">Memuat data...</td></tr>';
+            txTbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text-muted);">Memuat data...</td></tr>';
             const params = new URLSearchParams({
                 action: 'list_today',
                 page: String(page),
@@ -482,7 +485,7 @@ foreach ($templateRows as $templateRow) {
             const res = await fetch(`checkout_actions.php?${params.toString()}`);
             const data = await res.json();
             if (!data.success) {
-                txTbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#b91c1c;">Gagal memuat data transaksi</td></tr>';
+                txTbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#b91c1c;">Gagal memuat data transaksi</td></tr>';
                 return;
             }
             const rows = data.transactions || [];
@@ -496,7 +499,7 @@ foreach ($templateRows as $templateRow) {
             txNext.disabled = page >= totalPages;
 
             if (!rows.length) {
-                txTbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);">Tidak ada data.</td></tr>';
+                txTbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text-muted);">Tidak ada data.</td></tr>';
                 return;
             }
             txTbody.innerHTML = rows.map((row, idx) => `
@@ -505,7 +508,10 @@ foreach ($templateRows as $templateRow) {
             <td>${row.invoice_no}</td>
             <td>${row.customer_name || 'Pelanggan Umum'}</td>
             <td>${row.transaction_at}</td>
-            <td>${formatRupiah(row.total)}</td>
+            <td>${formatRupiah(row.subtotal)}</td>
+            <td>${formatRupiah(row.discount || 0)}</td>
+            <td>${formatRupiah(row.downpayment || 0)}</td>
+            <td>${formatRupiah((row.subtotal || 0) - (row.discount || 0) - (row.downpayment || 0))}</td>
             <td><span class="badge ${row.status}">${row.status === 'paid' ? 'Sudah Bayar' : 'Belum Bayar'}</span></td>
             <td><span class="badge ${Number(row.is_printed) === 1 ? 'paid' : 'pending'}">${Number(row.is_printed) === 1 ? 'Sudah Cetak' : 'Belum Cetak'}</span></td>
             <td style="display:flex;gap:6px;flex-wrap:wrap;">
@@ -530,11 +536,13 @@ foreach ($templateRows as $templateRow) {
             const totalQty = items.reduce((sum, it) => sum + Number(it.qty || 0), 0);
             const totalSubtotal = items.reduce((sum, it) => sum + Number(it.subtotal || 0), 0);
             txModalBody.innerHTML = `
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:14px;">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:14px;">
             <div style="border:1px solid var(--border-color);border-radius:10px;padding:10px;background:#f8fafc;"><div style="font-size:11px;color:var(--text-muted);">Invoice</div><div style="font-weight:700;">${escHtml(tx.invoice_no || '-')}</div></div>
             <div style="border:1px solid var(--border-color);border-radius:10px;padding:10px;background:#f8fafc;"><div style="font-size:11px;color:var(--text-muted);">Status</div><div style="font-weight:700;">${tx.status === 'paid' ? 'Sudah Bayar' : 'Belum Bayar'}</div></div>
             <div style="border:1px solid var(--border-color);border-radius:10px;padding:10px;background:#f8fafc;"><div style="font-size:11px;color:var(--text-muted);">Pelanggan</div><div style="font-weight:700;">${escHtml(tx.customer_name || 'Pelanggan Umum')}</div></div>
             <div style="border:1px solid var(--border-color);border-radius:10px;padding:10px;background:#f8fafc;"><div style="font-size:11px;color:var(--text-muted);">Waktu</div><div style="font-weight:700;">${escHtml(tx.transaction_at || '-')}</div></div>
+            <div style="border:1px solid var(--border-color);border-radius:10px;padding:10px;background:#f8fafc;"><div style="font-size:11px;color:var(--text-muted);">Diskon</div><div style="font-weight:700;">${formatRupiah(tx.discount || 0)}</div></div>
+            <div style="border:1px solid var(--border-color);border-radius:10px;padding:10px;background:#f8fafc;"><div style="font-size:11px;color:var(--text-muted);">Uang Muka</div><div style="font-weight:700;">${formatRupiah(tx.downpayment || 0)}</div></div>
         </div>
         <table class="tx-table">
             <thead><tr><th>Produk</th><th>Varian</th><th>Harga</th><th>Qty</th><th>Subtotal</th></tr></thead>
@@ -572,6 +580,10 @@ foreach ($templateRows as $templateRow) {
             if (printTemplates.nota && String(printTemplates.nota).trim() !== '') {
                 const logoUrl = receiptTemplate.logo_url || '';
                 const logoImg = logoUrl ? `<img src="${escHtml(logoUrl)}" alt="Logo" style="max-width:120px;max-height:60px;object-fit:contain;">` : '';
+                const subtotal = Number(tx.subtotal || 0);
+                const discountVal = Number(tx.discount || 0);
+                const dpVal = Number(tx.downpayment || 0);
+                const sisaBayar = Math.max(0, subtotal - discountVal - dpVal);
                 return applyPrintTemplate(printTemplates.nota, {
                     store_name: escHtml(storeName),
                     store_address: escHtml(storeAddress),
@@ -583,7 +595,11 @@ foreach ($templateRows as $templateRow) {
                     transaction_at: escHtml(tx.transaction_at || '-'),
                     customer_name: escHtml(tx.customer_name || 'Pelanggan Umum'),
                     items_rows: itemRows,
-                    total: escHtml(formatRupiah(tx.total || 0)),
+                    // total should be the subtotal (sum of item subtotals) before discount and downpayment
+                    total: escHtml(formatRupiah(subtotal)),
+                    discount: escHtml(formatRupiah(tx.discount || 0)),
+                    downpayment: escHtml(formatRupiah(tx.downpayment || 0)),
+                    sisa_bayar: escHtml(formatRupiah(sisaBayar)),
                     paid_amount: escHtml(formatRupiah(tx.paid_amount || 0)),
                     change_amount: escHtml(formatRupiah(tx.change_amount || 0)),
                     status: escHtml(statusText),
@@ -625,8 +641,17 @@ foreach ($templateRows as $templateRow) {
             <div style="border-bottom:1px dashed #000;margin:8px 0;"></div>
             ${thermalItemRows}
             <div style="border-bottom:1px dashed #000;margin:8px 0;"></div>
-            <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;">
-                <span>Total</span><span>${formatRupiah(tx.total)}</span>
+            <div style="display:flex;justify-content:space-between;font-size:12px;">
+                <span>Diskon</span><span>${formatRupiah(tx.discount || 0)}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;">
+                <span>Uang Muka</span><span>${formatRupiah(tx.downpayment || 0)}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;">
+                <span>Total</span><span>${formatRupiah(Number(tx.subtotal || 0))}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;">
+                <span>Sisa Bayar</span><span>${formatRupiah(Math.max(0, Number(tx.subtotal || 0) - Number(tx.discount || 0) - Number(tx.downpayment || 0)))}</span>
             </div>
             <div style="display:flex;justify-content:space-between;font-size:12px;">
                 <span>Bayar</span><span>${formatRupiah(tx.paid_amount)}</span>
@@ -664,6 +689,8 @@ foreach ($templateRows as $templateRow) {
                     customer_name: escHtml(tx.customer_name || 'Pelanggan Umum'),
                     items_rows: itemRows,
                     total: escHtml(formatRupiah(tx.total || 0)),
+                    discount: escHtml(formatRupiah(tx.discount || 0)),
+                    downpayment: escHtml(formatRupiah(tx.downpayment || 0)),
                     paid_amount: escHtml(formatRupiah(tx.paid_amount || 0)),
                     change_amount: escHtml(formatRupiah(tx.change_amount || 0)),
                     status: escHtml(statusText),
@@ -682,6 +709,8 @@ foreach ($templateRows as $templateRow) {
             <div style="border:1px dashed #aaa;padding:10px;margin-bottom:12px;">${itemRows}</div>
             <table style="width:100%;">
                 <tr><td style="width:140px;">Total</td><td>: ${formatRupiah(tx.total || 0)}</td></tr>
+                <tr><td>Diskon</td><td>: ${formatRupiah(tx.discount || 0)}</td></tr>
+                <tr><td>Uang Muka</td><td>: ${formatRupiah(tx.downpayment || 0)}</td></tr>
                 <tr><td>Status</td><td>: ${statusText}</td></tr>
                 <tr><td>Rekening</td><td>: ${escHtml(bankAccount || '-')}</td></tr>
             </table>

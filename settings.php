@@ -376,6 +376,93 @@ foreach ($templateRows as $templateRow) {
     }
 }
 
+// Ensure default templates exist in DB and include {{discount}} and {{downpayment}}
+$defaultNotaTemplate = <<<HTML
+<div style="font-family:monospace; font-size:12px;">
+  <div style="text-align:center; font-weight:bold;">{{store_name}}</div>
+  <div style="text-align:center;">{{store_address}}</div>
+  <div style="text-align:center;">{{store_phone}}</div>
+  <hr />
+  <div>Invoice: {{invoice_no}}</div>
+  <div>Tanggal: {{transaction_at}}</div>
+  <div>Customer: {{customer_name}}</div>
+  <hr />
+  <div>{{items_rows}}</div>
+  <hr />
+  <div style="display:flex;justify-content:space-between;"><span>Subtotal</span><span>{{total}}</span></div>
+  <div style="display:flex;justify-content:space-between;"><span>Diskon</span><span>{{discount}}</span></div>
+  <div style="display:flex;justify-content:space-between;"><span>Uang Muka</span><span>{{downpayment}}</span></div>
+    <div style="display:flex;justify-content:space-between;font-weight:bold;"><span>Sisa Bayar</span><span>{{sisa_bayar}}</span></div>
+  <div style="display:flex;justify-content:space-between;"><span>Bayar</span><span>{{paid_amount}}</span></div>
+  <div style="display:flex;justify-content:space-between;"><span>Kembali</span><span>{{change_amount}}</span></div>
+  <hr />
+  <div style="text-align:center;">{{footer_text}}</div>
+</div>
+HTML;
+
+$defaultKwitansiTemplate = <<<HTML
+<div style="font-family:monospace; font-size:12px;">
+  <div style="text-align:center; font-weight:bold;">KWITANSI - {{store_name}}</div>
+  <div>No: {{invoice_no}}</div>
+  <div>Tanggal: {{transaction_at}}</div>
+  <div>Untuk pembayaran: {{customer_name}}</div>
+  <hr />
+  <div>Total: {{total}}</div>
+  <div>Diskon: {{discount}}</div>
+  <div>Uang Muka: {{downpayment}}</div>
+    <div>Sisa Bayar: {{sisa_bayar}}</div>
+  <div>Dibayar: {{paid_amount}}</div>
+  <div>Kembali: {{change_amount}}</div>
+  <hr />
+  <div>{{footer_text}}</div>
+</div>
+HTML;
+
+try {
+    if (trim($printTemplates['nota']) === '') {
+        $stmt = $pdo->prepare(
+            'INSERT INTO print_templates (template_type, template_name, format_type, template_content, is_active)
+             VALUES (:type, :name, "html", :content, 1)
+             ON DUPLICATE KEY UPDATE
+                template_name = VALUES(template_name),
+                template_content = VALUES(template_content),
+                is_active = VALUES(is_active),
+                updated_at = CURRENT_TIMESTAMP'
+        );
+        $stmt->execute([':type' => 'nota', ':name' => 'Template Nota', ':content' => $defaultNotaTemplate]);
+        $printTemplates['nota'] = $defaultNotaTemplate;
+    }
+    if (trim($printTemplates['kwitansi']) === '') {
+        $stmt = $pdo->prepare(
+            'INSERT INTO print_templates (template_type, template_name, format_type, template_content, is_active)
+             VALUES (:type, :name, "html", :content, 1)
+             ON DUPLICATE KEY UPDATE
+                template_name = VALUES(template_name),
+                template_content = VALUES(template_content),
+                is_active = VALUES(is_active),
+                updated_at = CURRENT_TIMESTAMP'
+        );
+        $stmt->execute([':type' => 'kwitansi', ':name' => 'Template Kwitansi', ':content' => $defaultKwitansiTemplate]);
+        $printTemplates['kwitansi'] = $defaultKwitansiTemplate;
+    }
+} catch (Throwable $e) {
+    // If DB insert fails, silently continue and show whatever existing templates are present.
+}
+
+// Attempt to migrate existing Nota template that used paid_amount for Sisa Bayar to use sisa_bayar instead.
+$oldSnippet = '<div style="display:flex;justify-content:space-between;font-weight:bold;"><span>Sisa Bayar</span><span>{{paid_amount}}</span></div>';
+$newSnippet = '<div style="display:flex;justify-content:space-between;font-weight:bold;"><span>Sisa Bayar</span><span>{{sisa_bayar}}</span></div>';
+try {
+    if (isset($printTemplates['nota']) && strpos($printTemplates['nota'], '{{sisa_bayar}}') === false && strpos($printTemplates['nota'], $oldSnippet) !== false) {
+        $updated = str_replace($oldSnippet, $newSnippet, $printTemplates['nota']);
+        $updStmt = $pdo->prepare('UPDATE print_templates SET template_content = :content, updated_at = CURRENT_TIMESTAMP WHERE template_type = :type');
+        $updStmt->execute([':content' => $updated, ':type' => 'nota']);
+        $printTemplates['nota'] = $updated;
+    }
+} catch (Throwable $e) {
+    // ignore migration errors
+}
+
 $units = $pdo->query('SELECT id, unit_code, unit_name, unit_symbol, is_active FROM master_units ORDER BY is_active DESC, unit_name ASC')->fetchAll(PDO::FETCH_ASSOC);
 $suppliers = $pdo->query('SELECT id, supplier_code, supplier_name, contact_name, phone, address, notes, is_active FROM master_suppliers ORDER BY is_active DESC, supplier_name ASC')->fetchAll(PDO::FETCH_ASSOC);
 ?>
@@ -1234,10 +1321,14 @@ $suppliers = $pdo->query('SELECT id, supplier_code, supplier_name, contact_name,
                             <code>{{customer_name}}</code>
                             <code>{{items_rows}}</code>
                             <code>{{total}}</code>
+                            <code>{{discount}}</code>
+                            <code>{{downpayment}}</code>
+                            <code>{{sisa_bayar}}</code>
                             <code>{{paid_amount}}</code>
                             <code>{{change_amount}}</code>
                             <code>{{status}}</code>
                             <code>{{footer_text}}</code>
+                            <div class="muted-note" style="margin-top:8px;">Catatan: <strong>{{total}}</strong> menunjukkan nilai subtotal (sebelum dikurangi diskon dan uang muka). Gunakan <strong>{{sisa_bayar}}</strong> untuk menampilkan sisa yang harus dibayar (subtotal - diskon - uang muka).</div>
                         </div>
                         <div class="panel-footer" style="margin-top:10px;">
                             <button type="submit" class="btn-primary">

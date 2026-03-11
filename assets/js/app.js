@@ -53,6 +53,7 @@ let products = serverProducts.map((p) => {
 let cart = [];
 let discount = 0;
 let payment = 0;
+let downpayment = 0;
 let activeCashierVariantId = "";
 let activeCategory = "Semua";
 let activeSearch = "";
@@ -69,7 +70,10 @@ const totalEl = document.getElementById("totalAmount");
 const changeEl = document.getElementById("changeAmount");
 const paymentInput = document.getElementById("paymentAmount");
 const discountInput = document.getElementById("discountInput");
+const discountType = document.getElementById("discountType");
 const discountAmountEl = document.getElementById("discountAmount");
+const downpaymentInput = document.getElementById("downpaymentInput");
+const downpaymentAmountEl = document.getElementById("downpaymentAmount");
 const checkoutBtn = document.getElementById("checkoutBtn");
 const saveDraftBtn = document.getElementById("saveDraftBtn");
 const printReceiptBtn = document.getElementById("printReceiptBtn");
@@ -314,7 +318,7 @@ function updateSummary() {
   );
   // Ambil diskon dari input dan tipe
   let discountValue = parseFloat(discountInput && discountInput.value ? discountInput.value : 0) || 0;
-  let discountTypeValue = discountType && discountType.value ? discountType.value : 'nominal';
+  let discountTypeValue = typeof discountType !== 'undefined' && discountType && discountType.value ? discountType.value : 'nominal';
   let discountCalc = 0;
   if (discountTypeValue === 'percent') {
     discountCalc = Math.floor(subtotal * (discountValue / 100));
@@ -322,18 +326,29 @@ function updateSummary() {
     discountCalc = discountValue;
   }
   discount = discountCalc;
-  const total = Math.max(0, subtotal - discountCalc);
+
+  // Ambil downpayment (DP)
+  let dpValue = parseFloat(downpaymentInput && downpaymentInput.value ? downpaymentInput.value : 0) || 0;
+  // Jangan melebihi total setelah diskon
+  const totalBeforeDP = Math.max(0, subtotal - discountCalc);
+  const dpCalc = Math.max(0, Math.min(dpValue, totalBeforeDP));
+  downpayment = dpCalc;
+
+  const total = Math.max(0, totalBeforeDP - dpCalc);
 
   subtotalEl.innerText = formatRupiah(subtotal);
   if (discountAmountEl)
     discountAmountEl.innerText = "- " + formatRupiah(discountCalc);
+  if (downpaymentAmountEl)
+    downpaymentAmountEl.innerText = "- " + formatRupiah(dpCalc);
   totalEl.innerText = formatRupiah(total);
 
   payment = parseFloat(paymentInput.value) || 0;
-  const change = Math.max(0, payment - total);
+  const effectivePaid = dpCalc + payment;
+  const change = Math.max(0, effectivePaid - total);
 
   const hasUnsetVariant = cart.some((item) => item.variant_unset);
-  if (payment >= total && total > 0 && !hasUnsetVariant) {
+  if (effectivePaid >= total && total > 0 && !hasUnsetVariant) {
     changeEl.innerText = formatRupiah(change);
     checkoutBtn.disabled = false;
     changeEl.style.color = "var(--emerald)";
@@ -446,7 +461,19 @@ window.loadDraftTransaction = async (id) => {
     }));
     currentDraftId = Number(tx.id || 0);
     if (customerNameInput) customerNameInput.value = tx.customer_name || "";
-    paymentInput.value = tx.status === "paid" ? tx.paid_amount : "";
+    // Set discount and downpayment inputs when loading draft
+    if (discountInput) discountInput.value = typeof tx.discount !== 'undefined' ? Number(tx.discount) : 0;
+    if (downpaymentInput) downpaymentInput.value = typeof tx.downpayment !== 'undefined' ? Number(tx.downpayment) : 0;
+    // For payment input show the extra paid amount beyond DP if transaction already paid
+    if (paymentInput) {
+      if (tx.status === 'paid') {
+        const paidAmt = Number(tx.paid_amount || 0);
+        const dpAmt = Number(tx.downpayment || 0);
+        paymentInput.value = Math.max(0, paidAmt - dpAmt) || '';
+      } else {
+        paymentInput.value = '';
+      }
+    }
     renderCart();
     showToast("Draft transaksi dimuat ke keranjang.", "success");
   } catch (err) {
@@ -459,13 +486,27 @@ async function submitTransaction(actionType) {
     (sum, item) => sum + item.price * item.quantity,
     0,
   );
-  discount =
-    parseFloat(
-      discountInput && discountInput.value ? discountInput.value : 0,
-    ) || 0;
-  const total = Math.max(0, subtotal - discount);
+  // Recompute discount the same way as updateSummary
+  const discountValue = parseFloat(discountInput && discountInput.value ? discountInput.value : 0) || 0;
+  const discountTypeValue = typeof discountType !== 'undefined' && discountType && discountType.value ? discountType.value : 'nominal';
+  let discountCalc = 0;
+  if (discountTypeValue === 'percent') {
+    discountCalc = Math.floor(subtotal * (discountValue / 100));
+  } else {
+    discountCalc = discountValue;
+  }
+  discount = discountCalc;
+
+  // Downpayment
+  const dpValue = parseFloat(downpaymentInput && downpaymentInput.value ? downpaymentInput.value : 0) || 0;
+  const totalBeforeDP = Math.max(0, subtotal - discountCalc);
+  const dpCalc = Math.max(0, Math.min(dpValue, totalBeforeDP));
+
+  const total = Math.max(0, totalBeforeDP); // total before applying downpayment
   const paid = parseFloat(paymentInput.value) || 0;
-  const change = Math.max(0, paid - total);
+  // paidTotal depends on action: if paying now, include dp+paid; if saving draft, paid is dp only
+  const paidTotal = actionType === 'pay' ? paid + dpCalc : actionType === 'save_draft' ? dpCalc : 0;
+  const change = Math.max(0, paidTotal - total);
 
   const response = await fetch("checkout_actions.php", {
     method: "POST",
@@ -475,9 +516,11 @@ async function submitTransaction(actionType) {
       draft_id: currentDraftId || 0,
       customer_name: customerNameInput ? customerNameInput.value.trim() : "",
       subtotal,
-      discount,
-      total,
-      paid_amount: actionType === "pay" ? paid : 0,
+      discount: discountCalc,
+      downpayment: dpCalc,
+      // send total before downpayment so DB keeps the original payable amount
+      total: total,
+      paid_amount: paidTotal,
       change_amount: actionType === "pay" ? change : 0,
       items: cart.map((item) => ({
         id: item.id,
@@ -494,7 +537,7 @@ async function submitTransaction(actionType) {
   if (!response.ok || !result.success) {
     throw new Error(result.message || "Gagal memproses transaksi");
   }
-  return { result, subtotal, total, paid, change };
+  return { result, subtotal, total, paid: paidTotal, change };
 }
 
 function normalizeSavedCartItem(item) {
@@ -701,6 +744,12 @@ function generateReceiptHTML(total, paid, change) {
     })
     .join("");
 
+  // compute subtotal, sisa bayar and ensure {{total}} maps to subtotal (before discount and downpayment)
+  const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const discountVal = Number(discount || 0);
+  const dpVal = Number(downpayment || 0);
+  const sisaBayar = Math.max(0, subtotal - discountVal - dpVal);
+
   if (printTemplates.nota && String(printTemplates.nota).trim() !== "") {
     const statusText =
       paid >= total && total > 0 ? "Sudah Bayar" : "Belum Bayar";
@@ -722,7 +771,11 @@ function generateReceiptHTML(total, paid, change) {
           : "Pelanggan Umum",
       ),
       items_rows: itemsHTML,
-      total: escapeHtml(formatRupiah(total)),
+      // total should be the subtotal (before discount and downpayment)
+      total: escapeHtml(formatRupiah(subtotal)),
+      discount: escapeHtml(formatRupiah(discountVal || 0)),
+      downpayment: escapeHtml(formatRupiah(dpVal || 0)),
+      sisa_bayar: escapeHtml(formatRupiah(sisaBayar)),
       paid_amount: escapeHtml(formatRupiah(paid)),
       change_amount: escapeHtml(formatRupiah(change)),
       status: escapeHtml(statusText),
@@ -748,14 +801,26 @@ function generateReceiptHTML(total, paid, change) {
             </div>
             <div style="margin-bottom: 15px;">${itemsHTML}</div>
             <div style="border-bottom: 1px dashed #000; margin: 10px 0;"></div>
-            <div style="display: flex; justify-content: space-between; font-size: 14px; font-weight: bold; margin-bottom: 5px;">
-                <span>Total</span>
-                <span>${formatRupiah(total)}</span>
-            </div>
-            <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px;">
-                <span>Tunai</span>
-                <span>${formatRupiah(paid)}</span>
-            </div>
+      <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px;">
+        <span>Diskon</span>
+        <span>${formatRupiah(discount || 0)}</span>
+      </div>
+      <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px;">
+        <span>Uang Muka</span>
+        <span>${formatRupiah(downpayment || 0)}</span>
+      </div>
+      <div style="display: flex; justify-content: space-between; font-size: 14px; font-weight: bold; margin-bottom: 5px;">
+        <span>Total</span>
+        <span>${formatRupiah(subtotal)}</span>
+      </div>
+      <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px;">
+        <span>Sisa Bayar</span>
+        <span>${formatRupiah(sisaBayar)}</span>
+      </div>
+      <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px;">
+        <span>Tunai</span>
+        <span>${formatRupiah(paid)}</span>
+      </div>
             <div style="display: flex; justify-content: space-between; font-size: 12px;">
                 <span>Kembali</span>
                 <span>${formatRupiah(change)}</span>
@@ -811,9 +876,8 @@ saveDraftBtn.addEventListener("click", async () => {
     currentDraftId = Number(result.transaction_id || 0);
     const draftNo = result.invoice_no || `Draft #${currentDraftId}`;
     showToast(`Berhasil simpan transaksi belum bayar (${draftNo}).`, "success");
-    if (saveDraftByShortcut) {
-      startNewTransaction();
-    }
+    // Setelah berhasil simpan draft, reset keranjang untuk memulai transaksi baru
+    startNewTransaction();
   } catch (err) {
     showToast(`Gagal simpan draft: ${err.message}`, "error");
   } finally {
@@ -882,6 +946,9 @@ if (discountInput) {
 }
 if (discountType) {
   discountType.addEventListener("change", updateSummary);
+}
+if (downpaymentInput) {
+  downpaymentInput.addEventListener("input", updateSummary);
 }
 searchInput.addEventListener("input", (e) => {
   activeSearch = e.target.value || "";

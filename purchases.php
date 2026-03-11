@@ -87,14 +87,26 @@ $pdo->exec(
 $suppliers = $pdo->query('SELECT id, supplier_code, supplier_name, is_active FROM master_suppliers WHERE is_active = 1 ORDER BY supplier_name ASC')->fetchAll(PDO::FETCH_ASSOC);
 $products = $pdo->query('SELECT id, kode_barang, nama_barang, harga_beli, supplier_id FROM products WHERE is_purchase_product = 1 ORDER BY nama_barang ASC')->fetchAll(PDO::FETCH_ASSOC);
 
-$purchaseRows = $pdo->query(
+// pagination
+$page = max(1, (int)($_GET['page'] ?? 1));
+$perPage = max(10, min(200, (int)($_GET['per_page'] ?? 25)));
+$offset = ($page - 1) * $perPage;
+
+$totalCount = (int)$pdo->query('SELECT COUNT(*) FROM purchase_orders')->fetchColumn();
+$totalPages = (int)ceil($totalCount / $perPage);
+
+$stmt = $pdo->prepare(
     'SELECT pi.*, s.supplier_name, s.supplier_code,
             (pi.total - pi.paid_amount) AS outstanding
      FROM purchase_orders pi
      INNER JOIN master_suppliers s ON s.id = pi.supplier_id
      ORDER BY pi.id DESC
-     LIMIT 300'
-)->fetchAll(PDO::FETCH_ASSOC);
+     LIMIT :limit OFFSET :offset'
+);
+$stmt->bindValue(':limit', $perPage, PDO::PARAM_INT);
+$stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+$stmt->execute();
+$purchaseRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 $summary = $pdo->query(
     'SELECT
@@ -449,13 +461,14 @@ function rupiah_purchase($value): string
                                 <th class="num">Dibayar</th>
                                 <th class="num">Hutang</th>
                                 <th>Status</th>
+                                <th>Bukti</th>
                                 <th>Aksi</th>
                             </tr>
                         </thead>
                         <tbody>
                             <?php if (empty($purchaseRows)): ?>
                                 <tr>
-                                    <td colspan="9" style="text-align:center;color:var(--text-muted);padding:16px;">Belum ada data pembelian.</td>
+                                    <td colspan="10" style="text-align:center;color:var(--text-muted);padding:16px;">Belum ada data pembelian.</td>
                                 </tr>
                             <?php else: ?>
                                 <?php foreach ($purchaseRows as $r): ?>
@@ -468,8 +481,18 @@ function rupiah_purchase($value): string
                                         <td class="num"><?= rupiah_purchase($r['paid_amount']) ?></td>
                                         <td class="num"><?= rupiah_purchase($r['outstanding']) ?></td>
                                         <td><span class="badge <?= htmlspecialchars((string)$r['status']) ?>"><?= strtoupper((string)$r['status']) ?></span></td>
+                                        <td>
+                                            <?php if (!empty($r['proof_file'])): ?>
+                                                <a href="<?= htmlspecialchars((string)$r['proof_file']) ?>" target="_blank">Lihat</a>
+                                            <?php else: ?>
+                                                -
+                                            <?php endif; ?>
+                                        </td>
                                         <td style="display:flex;gap:6px;flex-wrap:wrap;">
                                             <button class="btn-mini blue" onclick="openDetailPurchase(<?= (int)$r['id'] ?>)">Detail</button>
+                                            <button class="btn-mini" onclick="openEditPurchase(<?= (int)$r['id'] ?>)">Edit</button>
+                                            <button class="btn-mini red" onclick="confirmDeletePurchase(<?= (int)$r['id'] ?>, '<?= htmlspecialchars((string)$r['invoice_no'], ENT_QUOTES) ?>')">Delete</button>
+                                            <button class="btn-mini" onclick="openUploadProof(<?= (int)$r['id'] ?>)">Upload</button>
                                             <?php if ((float)$r['outstanding'] > 0): ?>
                                                 <button class="btn-mini green" onclick="openPaymentModal(<?= (int)$r['id'] ?>, '<?= htmlspecialchars((string)$r['invoice_no'], ENT_QUOTES) ?>', <?= (float)$r['outstanding'] ?>)">Bayar</button>
                                             <?php endif; ?>
@@ -480,6 +503,35 @@ function rupiah_purchase($value): string
                         </tbody>
                     </table>
                 </div>
+                <?php if ($totalPages > 1): ?>
+                    <div style="padding:12px;display:flex;justify-content:center;">
+                        <div class="pagination">
+                            <?php if ($page > 1): ?>
+                                <a href="?page=<?= $page-1 ?>&per_page=<?= $perPage ?>">&laquo; Prev</a>
+                            <?php else: ?>
+                                <span style="opacity:.5">&laquo; Prev</span>
+                            <?php endif; ?>
+
+                            <?php
+                            $start = max(1, $page - 3);
+                            $end = min($totalPages, $page + 3);
+                            for ($p = $start; $p <= $end; $p++):
+                            ?>
+                                <?php if ($p === $page): ?>
+                                    <span class="active"><?= $p ?></span>
+                                <?php else: ?>
+                                    <a href="?page=<?= $p ?>&per_page=<?= $perPage ?>"><?= $p ?></a>
+                                <?php endif; ?>
+                            <?php endfor; ?>
+
+                            <?php if ($page < $totalPages): ?>
+                                <a href="?page=<?= $page+1 ?>&per_page=<?= $perPage ?>">Next &raquo;</a>
+                            <?php else: ?>
+                                <span style="opacity:.5">Next &raquo;</span>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                <?php endif; ?>
             </section>
         </main>
     </div>
@@ -584,9 +636,12 @@ function rupiah_purchase($value): string
     </div>
 
     <script>
-        const products = <?= json_encode($products, JSON_UNESCAPED_UNICODE) ?>;
+    const products = <?= json_encode($products, JSON_UNESCAPED_UNICODE) ?>;
 
-        const purchaseModal = document.getElementById('purchaseModal');
+    // currently editing purchase id (0 when creating new)
+    let editingPurchaseId = 0;
+
+    const purchaseModal = document.getElementById('purchaseModal');
         const paymentModal = document.getElementById('paymentModal');
         const detailModal = document.getElementById('detailModal');
         const poItemsBody = document.getElementById('poItemsBody');
@@ -609,6 +664,8 @@ function rupiah_purchase($value): string
         }
 
         function openCreatePurchase() {
+            // ensure create (not editing)
+            editingPurchaseId = 0;
             document.getElementById('poSupplier').value = '';
             document.getElementById('poDate').value = todayStr();
             document.getElementById('poDueDate').value = '';
@@ -621,6 +678,8 @@ function rupiah_purchase($value): string
 
         function closePurchaseModal() {
             purchaseModal.classList.remove('active');
+            // reset editing state
+            clearEditingState();
         }
 
         function productOptionsHtml() {
@@ -706,27 +765,29 @@ function rupiah_purchase($value): string
                 alert('Tambahkan minimal 1 item produk valid.');
                 return;
             }
-
             const btn = document.getElementById('btnSavePO');
             btn.disabled = true;
             btn.innerText = 'Menyimpan...';
             try {
+                const payload = {
+                    action: editingPurchaseId > 0 ? 'update_purchase' : 'create_purchase',
+                    supplier_id: supplierId,
+                    invoice_date: document.getElementById('poDate').value || todayStr(),
+                    due_date: document.getElementById('poDueDate').value || '',
+                    notes: document.getElementById('poNotes').value || '',
+                    items: items,
+                };
+                if (editingPurchaseId > 0) payload.purchase_id = editingPurchaseId;
+
                 const res = await fetch('purchase_actions.php', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({
-                        action: 'create_purchase',
-                        supplier_id: supplierId,
-                        invoice_date: document.getElementById('poDate').value || todayStr(),
-                        due_date: document.getElementById('poDueDate').value || '',
-                        notes: document.getElementById('poNotes').value || '',
-                        items: items,
-                    }),
+                    body: JSON.stringify(payload),
                 });
                 const data = await res.json();
-                if (!res.ok || !data.success) throw new Error(data.message || 'Gagal membuat PO');
+                if (!res.ok || !data.success) throw new Error(data.message || (editingPurchaseId > 0 ? 'Gagal memperbarui PO' : 'Gagal membuat PO'));
                 window.location.reload();
             } catch (err) {
                 alert(err.message || 'Gagal memproses');
@@ -734,6 +795,60 @@ function rupiah_purchase($value): string
                 btn.disabled = false;
                 btn.innerText = 'Simpan PO';
             }
+        }
+
+        // helper: populate po items into modal
+        function setPoItems(items) {
+            poItemsBody.innerHTML = '';
+            if (!Array.isArray(items) || items.length === 0) {
+                addPoItem();
+                return;
+            }
+            items.forEach((it) => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+        <td><select class="po-product">${productOptionsHtml()}</select></td>
+        <td><input type="number" class="po-qty" min="0.0001" step="0.0001" value="${Number(it.qty||0)}"></td>
+        <td><input type="number" class="po-cost" min="0" step="0.01" value="${Number(it.unit_cost||0)}"></td>
+        <td class="po-subtotal">${formatRupiah((Number(it.qty||0) * Number(it.unit_cost||0)))}</td>
+        <td><button type="button" class="btn-mini" onclick="removePoItem(this)">x</button></td>
+    `;
+                poItemsBody.appendChild(tr);
+                const productSelect = tr.querySelector('.po-product');
+                const qtyInput = tr.querySelector('.po-qty');
+                const costInput = tr.querySelector('.po-cost');
+
+                // set selected product if product_id present
+                if (it.product_id) {
+                    productSelect.value = String(it.product_id);
+                } else if (it.product_code) {
+                    // try match by code
+                    const opt = Array.from(productSelect.options).find(o => o.dataset && o.dataset.code === String(it.product_code));
+                    if (opt) productSelect.value = opt.value;
+                }
+
+                productSelect.addEventListener('change', () => {
+                    const opt = productSelect.selectedOptions[0];
+                    const cost = Number(opt?.dataset?.cost || 0);
+                    if (!isFinite(Number(cost)) || Number(tr.querySelector('.po-cost').value) === 0) {
+                        costInput.value = String(cost);
+                    }
+                    recalcPoRow(tr);
+                });
+                qtyInput.addEventListener('input', () => recalcPoRow(tr));
+                costInput.addEventListener('input', () => recalcPoRow(tr));
+                recalcPoRow(tr);
+            });
+        }
+
+        function clearEditingState() {
+            editingPurchaseId = 0;
+            document.getElementById('poSupplier').value = '';
+            document.getElementById('poDate').value = '';
+            document.getElementById('poDueDate').value = '';
+            document.getElementById('poNotes').value = '';
+            poItemsBody.innerHTML = '';
+            recalcPoTotal();
         }
 
         function openPaymentModal(purchaseId, invoiceNo, outstanding) {
@@ -844,14 +959,90 @@ function rupiah_purchase($value): string
             detailModal.classList.remove('active');
         }
 
+        // Open edit modal and prefill with purchase data
+        async function openEditPurchase(id) {
+            try {
+                const res = await fetch(`purchase_actions.php?action=detail&id=${id}`);
+                const data = await res.json();
+                if (!res.ok || !data.success) throw new Error(data.message || 'Gagal memuat data PO');
+                const p = data.purchase || {};
+                const items = data.items || [];
+
+                editingPurchaseId = Number(p.id || 0);
+                document.getElementById('poSupplier').value = String(p.supplier_id || '');
+                document.getElementById('poDate').value = p.invoice_date || todayStr();
+                document.getElementById('poDueDate').value = p.due_date || '';
+                document.getElementById('poNotes').value = p.notes || '';
+                setPoItems(items);
+                recalcPoTotal();
+                purchaseModal.classList.add('active');
+            } catch (err) {
+                alert(err.message || 'Gagal memuat data untuk edit');
+            }
+        }
+
+        // Confirm and delete purchase
+        function confirmDeletePurchase(id, invoiceNo) {
+            if (!confirm(`Hapus PO ${String(invoiceNo || id)}? Tindakan ini akan mengurangi stok produk yang ditambahkan oleh PO ini.`)) return;
+            deletePurchase(id);
+        }
+
+        async function deletePurchase(id) {
+            try {
+                const res = await fetch('purchase_actions.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'delete_purchase', purchase_id: Number(id) }),
+                });
+                const data = await res.json();
+                if (!res.ok || !data.success) throw new Error(data.message || 'Gagal menghapus PO');
+                window.location.reload();
+            } catch (err) {
+                alert(err.message || 'Gagal memproses penghapusan');
+            }
+        }
+
         document.addEventListener('click', (e) => {
             if (e.target === purchaseModal) closePurchaseModal();
             if (e.target === paymentModal) closePaymentModal();
             if (e.target === detailModal) closeDetailModal();
         });
 
+        // Upload proof of purchase handler: create hidden file input and post to server
+        function openUploadProof(purchaseId) {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.png,.jpg,.jpeg,.pdf';
+            input.addEventListener('change', async () => {
+                if (!input.files || !input.files.length) return;
+                const file = input.files[0];
+                const fd = new FormData();
+                fd.append('action', 'upload_proof');
+                fd.append('purchase_id', String(purchaseId));
+                fd.append('proof', file);
+                try {
+                    const res = await fetch('purchase_actions.php', {
+                        method: 'POST',
+                        body: fd,
+                    });
+                    const data = await res.json();
+                    if (!res.ok || !data.success) throw new Error(data.message || 'Gagal mengunggah file');
+                    window.location.reload();
+                } catch (err) {
+                    alert(err.message || 'Gagal mengunggah bukti');
+                }
+            });
+            // trigger file chooser
+            input.click();
+        }
+
         feather.replace();
     </script>
+    <style>
+        .pagination { display:flex; gap:6px; align-items:center; margin-top:12px; }
+        .pagination a, .pagination span { padding:6px 10px; border:1px solid var(--border-color); border-radius:6px; background:#fff; text-decoration:none; color:inherit; }
+        .pagination .active { background:#111827; color:#fff; }
+    </style>
 </body>
 
 </html>

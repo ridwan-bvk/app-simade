@@ -643,6 +643,13 @@ foreach ($templateRows as $templateRow) {
                         <span id="discountAmount">- Rp 0</span>
                     </span>
                 </div>
+                <div class="summary-row">
+                    <span class="text-muted">Uang Muka (Downpayment)</span>
+                    <span class="font-medium text-emerald">
+                        <input type="number" id="downpaymentInput" value="0" min="0" style="width:120px;padding:4px 8px;font-size:14px;border-radius:6px;border:1px solid #ddd;">
+                        <span id="downpaymentAmount">- Rp 0</span>
+                    </span>
+                </div>
                 <div class="summary-divider"></div>
                 <div class="summary-row total-row">
                     <span>Total</span>

@@ -1,0 +1,25 @@
+                        <th class="num sortable-th" data-sort-type="num">Qty <span class="sort-icon">↕</span></th>
+                        <th class="num sortable-th" data-sort-type="text">
+                            Satuan
+                            <form method="POST" style="display:inline;">
+                                <input type="hidden" name="action" value="refresh_unit_snapshot">
+                                <input type="hidden" name="start_date" value="<?= htmlspecialchars($startDate) ?>">
+                                <input type="hidden" name="end_date" value="<?= htmlspecialchars($endDate) ?>">
+                                <input type="hidden" name="status" value="<?= htmlspecialchars($status) ?>">
+                                <button type="submit" class="btn-refresh-icon" title="Refresh satuan dari master produk">
+                                    <i data-feather="refresh-cw" style="width:13px;height:13px;"></i>
+                                </button>
+                            </form>
+                            <span class="sort-icon">↕</span>
+                        </th>
+                        <th class="num sortable-th" data-sort-type="num">Konversi Base <span class="sort-icon">↕</span></th>
+                        <th class="num sortable-th" data-sort-type="num">Total Base Qty <span class="sort-icon">↕</span></th>
+                        <th class="num sortable-th" data-sort-type="num">Harga Jual <span class="sort-icon">↕</span></th>
+                        <th class="num sortable-th" data-sort-type="num">Subtotal <span class="sort-icon">↕</span></th>
+                        <th class="num sortable-th" data-sort-type="num">Downpayment (DP) <span class="sort-icon">↕</span></th>
+                        <th class="num sortable-th" data-sort-type="num">Sisa Bayar <span class="sort-icon">↕</span></th>
+                        <th class="num sortable-th" data-sort-type="num">Harga Beli <span class="sort-icon">↕</span></th>
+                        <th class="num sortable-th" data-sort-type="num">Modal <span class="sort-icon">↕</span></th>
+                        <th class="num sortable-th" data-sort-type="num">Laba <span class="sort-icon">↕</span></th>
+                    </tr>
+                    </thead>
