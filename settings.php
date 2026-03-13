@@ -355,6 +355,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     exit;
 }
 
+// Import database from uploaded .sql file
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'import_database') {
+    if (!isset($_FILES['sql_file']) || ($_FILES['sql_file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        header('Location: settings.php?msg=import_error&error=' . urlencode('File tidak di-upload atau terjadi kesalahan upload.'));
+        exit;
+    }
+
+    $file = $_FILES['sql_file'];
+    $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+    $allowed = ['sql'];
+    if (!in_array($ext, $allowed, true)) {
+        header('Location: settings.php?msg=import_error&error=' . urlencode('Ekstensi file tidak diperbolehkan. Hanya .sql yang diterima.'));
+        exit;
+    }
+
+    // ukuran batas 10MB (sesuaikan bila perlu)
+    if ($file['size'] > 10 * 1024 * 1024) {
+        header('Location: settings.php?msg=import_error&error=' . urlencode('Ukuran file terlalu besar (max 10MB).'));
+        exit;
+    }
+
+    $tmp = $file['tmp_name'];
+    $sql = @file_get_contents($tmp);
+    if ($sql === false) {
+        header('Location: settings.php?msg=import_error&error=' . urlencode('Gagal membaca file SQL yang di-upload.'));
+        exit;
+    }
+
+    try {
+        // lakukan import dalam transaksi; matikan foreign key checks sementara untuk mengurangi error dependensi
+        $pdo->beginTransaction();
+        $pdo->exec('SET FOREIGN_KEY_CHECKS=0;');
+        // menjalankan seluruh isi file SQL; jika DB besar atau file kompleks, eksekusi bisa gagal => tangani exception
+        $pdo->exec($sql);
+        $pdo->exec('SET FOREIGN_KEY_CHECKS=1;');
+        $pdo->commit();
+
+        header('Location: settings.php?msg=import_success');
+        exit;
+    } catch (Exception $e) {
+        // rollback dan kirim pesan error (di-URL encode)
+        try { $pdo->rollBack(); } catch (Exception $_) {}
+        $err = $e->getMessage();
+        header('Location: settings.php?msg=import_error&error=' . urlencode($err));
+        exit;
+    }
+}
+
 $current = $defaults;
 $rows = $pdo->query("SELECT setting_key, setting_value FROM app_settings WHERE setting_key LIKE 'receipt_%'")->fetchAll(PDO::FETCH_ASSOC);
 foreach ($rows as $row) {
@@ -1340,6 +1388,27 @@ $suppliers = $pdo->query('SELECT id, supplier_code, supplier_name, contact_name,
                 </section>
             </div>
         </details>
+
+        <!-- IMPORT DATABASE -->
+        <div style="margin-top:18px;border:1px solid var(--border-color);background:#fff;padding:12px;border-radius:10px;">
+            <div style="font-weight:700;margin-bottom:8px;">Impor Database (.sql)</div>
+            <?php if (isset($_GET['msg']) && $_GET['msg'] === 'import_success'): ?>
+                <div style="background:#ecfdf5;border:1px solid #10b981;color:#065f46;padding:8px;border-radius:8px;margin-bottom:8px;">Impor database berhasil.</div>
+            <?php elseif (isset($_GET['msg']) && $_GET['msg'] === 'import_error'): ?>
+                <div style="background:#fff4f4;border:1px solid #f43f5e;color:#7f1d1d;padding:8px;border-radius:8px;margin-bottom:8px;">
+                    Terjadi kesalahan saat impor: <?= htmlspecialchars((string)($_GET['error'] ?? 'Unknown error')) ?>
+                </div>
+            <?php endif; ?>
+
+            <form method="POST" enctype="multipart/form-data" onsubmit="return confirm('Impor database akan mengeksekusi SQL dari file yang Anda pilih dan dapat mengubah/menimpa data saat ini. Pastikan Anda sudah melakukan backup. Lanjutkan impor?');">
+                <input type="hidden" name="action" value="import_database">
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <input type="file" name="sql_file" accept=".sql" required>
+                    <button class="btn-primary" type="submit">Impor Database</button>
+                </div>
+                <div style="margin-top:8px;font-size:12px;color:var(--text-muted);">File .sql akan dieksekusi langsung pada database. Disarankan membuat backup terlebih dahulu.</div>
+            </form>
+        </div>
     </main>
 </div>
 <script>
