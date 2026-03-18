@@ -45,6 +45,9 @@ function ensure_transaction_tables(PDO $pdo): void
             total DECIMAL(15,2) NOT NULL DEFAULT 0,
             paid_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
             change_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
+            payment_method ENUM("cash","transfer") NOT NULL DEFAULT "cash",
+            payment_note VARCHAR(255) NULL,
+            is_non_cash TINYINT(1) NOT NULL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
     );
@@ -92,6 +95,18 @@ function ensure_transaction_tables(PDO $pdo): void
     if (!$hasDownpayment) {
         $pdo->exec("ALTER TABLE sales_transactions ADD COLUMN downpayment DECIMAL(15,2) NOT NULL DEFAULT 0 AFTER discount");
     }
+    $hasPaymentMethod = $pdo->query("SHOW COLUMNS FROM sales_transactions LIKE 'payment_method'")->fetch(PDO::FETCH_ASSOC);
+    if (!$hasPaymentMethod) {
+        $pdo->exec("ALTER TABLE sales_transactions ADD COLUMN payment_method ENUM('cash','transfer') NOT NULL DEFAULT 'cash' AFTER change_amount");
+    }
+    $hasPaymentNote = $pdo->query("SHOW COLUMNS FROM sales_transactions LIKE 'payment_note'")->fetch(PDO::FETCH_ASSOC);
+    if (!$hasPaymentNote) {
+        $pdo->exec("ALTER TABLE sales_transactions ADD COLUMN payment_note VARCHAR(255) NULL AFTER payment_method");
+    }
+    $hasIsNonCash = $pdo->query("SHOW COLUMNS FROM sales_transactions LIKE 'is_non_cash'")->fetch(PDO::FETCH_ASSOC);
+    if (!$hasIsNonCash) {
+        $pdo->exec("ALTER TABLE sales_transactions ADD COLUMN is_non_cash TINYINT(1) NOT NULL DEFAULT 0 AFTER payment_note");
+    }
     $hasUnitIdSnapshot = $pdo->query("SHOW COLUMNS FROM sales_transaction_items LIKE 'unit_id_snapshot'")->fetch(PDO::FETCH_ASSOC);
     if (!$hasUnitIdSnapshot) {
         $pdo->exec("ALTER TABLE sales_transaction_items ADD COLUMN unit_id_snapshot INT UNSIGNED NULL AFTER qty");
@@ -115,6 +130,169 @@ function json_error(int $statusCode, string $message): void
     http_response_code($statusCode);
     echo json_encode(['success' => false, 'message' => $message]);
     exit;
+}
+
+function get_current_auth_identifiers(): array
+{
+    $identifiers = [
+        'user_id' => null,
+        'username' => null,
+        'email' => null,
+    ];
+
+    if (session_status() === PHP_SESSION_ACTIVE || session_status() === PHP_SESSION_NONE) {
+        if (session_status() === PHP_SESSION_NONE) {
+            @session_start();
+        }
+        $sessionUserIdKeys = ['user_id', 'auth_user_id', 'login_user_id', 'id'];
+        foreach ($sessionUserIdKeys as $key) {
+            if (isset($_SESSION[$key]) && (int)$_SESSION[$key] > 0) {
+                $identifiers['user_id'] = (int)$_SESSION[$key];
+                break;
+            }
+        }
+        $sessionUsernameKeys = ['username', 'user_username', 'login_username', 'name'];
+        foreach ($sessionUsernameKeys as $key) {
+            if (!empty($_SESSION[$key])) {
+                $identifiers['username'] = trim((string)$_SESSION[$key]);
+                break;
+            }
+        }
+        $sessionEmailKeys = ['email', 'user_email', 'login_email'];
+        foreach ($sessionEmailKeys as $key) {
+            if (!empty($_SESSION[$key])) {
+                $identifiers['email'] = trim((string)$_SESSION[$key]);
+                break;
+            }
+        }
+    }
+
+    $functionCandidates = ['current_user', 'auth_user', 'get_auth_user'];
+    foreach ($functionCandidates as $fn) {
+        if (function_exists($fn)) {
+            try {
+                $user = $fn();
+                if (is_array($user)) {
+                    if ($identifiers['user_id'] === null) {
+                        $identifiers['user_id'] = isset($user['id']) ? (int)$user['id'] : (isset($user['user_id']) ? (int)$user['user_id'] : null);
+                    }
+                    if ($identifiers['username'] === null) {
+                        $identifiers['username'] = isset($user['username']) ? trim((string)$user['username']) : (isset($user['name']) ? trim((string)$user['name']) : null);
+                    }
+                    if ($identifiers['email'] === null && isset($user['email'])) {
+                        $identifiers['email'] = trim((string)$user['email']);
+                    }
+                }
+            } catch (Throwable $e) {
+                // ignore optional auth helper mismatch
+            }
+        }
+    }
+
+    return $identifiers;
+}
+
+function detect_auth_tables(PDO $pdo): array
+{
+    $stmt = $pdo->query(
+        "SELECT TABLE_NAME, COLUMN_NAME
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND COLUMN_NAME IN ('id', 'user_id', 'username', 'email', 'password_hash', 'password')"
+    );
+    $rows = $stmt ? $stmt->fetchAll(PDO::FETCH_ASSOC) : [];
+    if (!$rows) {
+        return [];
+    }
+
+    $tables = [];
+    foreach ($rows as $row) {
+        $table = (string)$row['TABLE_NAME'];
+        $column = (string)$row['COLUMN_NAME'];
+        if (!isset($tables[$table])) {
+            $tables[$table] = [];
+        }
+        $tables[$table][$column] = true;
+    }
+
+    $candidates = [];
+    foreach ($tables as $table => $columns) {
+        if (!isset($columns['password_hash']) && !isset($columns['password'])) {
+            continue;
+        }
+        $score = 0;
+        if (isset($columns['id']) || isset($columns['user_id'])) $score += 2;
+        if (isset($columns['username'])) $score += 2;
+        if (isset($columns['email'])) $score += 1;
+        if (stripos($table, 'user') !== false) $score += 2;
+        if (stripos($table, 'auth') !== false) $score += 1;
+        $candidates[] = ['table' => $table, 'columns' => array_keys($columns), 'score' => $score];
+    }
+
+    usort($candidates, static function ($a, $b) {
+        return $b['score'] <=> $a['score'];
+    });
+
+    return $candidates;
+}
+
+function verify_current_login_password(PDO $pdo, string $password): bool
+{
+    $password = trim($password);
+    if ($password === '') {
+        return false;
+    }
+
+    $identifiers = get_current_auth_identifiers();
+    $tables = detect_auth_tables($pdo);
+    if (!$tables) {
+        return false;
+    }
+
+    foreach ($tables as $candidate) {
+        $table = $candidate['table'];
+        $columns = array_fill_keys($candidate['columns'], true);
+        $passwordColumn = isset($columns['password_hash']) ? 'password_hash' : 'password';
+        $idColumn = isset($columns['id']) ? 'id' : (isset($columns['user_id']) ? 'user_id' : null);
+
+        if ($identifiers['user_id'] !== null && $idColumn !== null) {
+            $stmt = $pdo->prepare("SELECT {$passwordColumn} AS password_value FROM {$table} WHERE {$idColumn} = :id LIMIT 1");
+            $stmt->execute([':id' => $identifiers['user_id']]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($row && isset($row['password_value'])) {
+                $storedPassword = (string)$row['password_value'];
+                if (password_verify($password, $storedPassword) || hash_equals($storedPassword, $password)) {
+                    return true;
+                }
+            }
+        }
+
+        if ($identifiers['username'] !== null && isset($columns['username'])) {
+            $stmt = $pdo->prepare("SELECT {$passwordColumn} AS password_value FROM {$table} WHERE username = :username LIMIT 1");
+            $stmt->execute([':username' => $identifiers['username']]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($row && isset($row['password_value'])) {
+                $storedPassword = (string)$row['password_value'];
+                if (password_verify($password, $storedPassword) || hash_equals($storedPassword, $password)) {
+                    return true;
+                }
+            }
+        }
+
+        if ($identifiers['email'] !== null && isset($columns['email'])) {
+            $stmt = $pdo->prepare("SELECT {$passwordColumn} AS password_value FROM {$table} WHERE email = :email LIMIT 1");
+            $stmt->execute([':email' => $identifiers['email']]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($row && isset($row['password_value'])) {
+                $storedPassword = (string)$row['password_value'];
+                if (password_verify($password, $storedPassword) || hash_equals($storedPassword, $password)) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
 }
 
 function save_items(PDO $pdo, int $transactionId, array $items): void
@@ -257,7 +435,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             }
             $offset = ($page - 1) * $pageSize;
 
-        $listSql = "SELECT id, invoice_no, status, is_printed, printed_at, transaction_at, customer_name, subtotal, discount, downpayment, total, paid_amount
+        $listSql = "SELECT id, invoice_no, status, is_printed, printed_at, transaction_at, customer_name, subtotal, discount, downpayment, total, paid_amount, change_amount, payment_method, payment_note, is_non_cash
                     FROM sales_transactions
                     WHERE {$whereSql}
                     ORDER BY id DESC
@@ -323,6 +501,26 @@ $total = (float)($payload['total'] ?? 0);
 $paid = (float)($payload['paid_amount'] ?? 0);
 $change = (float)($payload['change_amount'] ?? 0);
 $draftId = (int)($payload['draft_id'] ?? 0);
+$downpaymentPayload = (float)($payload['downpayment'] ?? 0);
+$paymentMethod = strtolower(trim((string)($payload['payment_method'] ?? 'cash')));
+$paymentMethod = $paymentMethod === 'transfer' ? 'transfer' : 'cash';
+$paymentNote = trim((string)($payload['payment_note'] ?? ''));
+$isNonCash = $paymentMethod === 'transfer' ? 1 : 0;
+
+if (in_array($action, ['save_draft', 'pay'], true)) {
+    if ($subtotal < 0 || $total < 0 || $paid < 0 || $change < 0) {
+        json_error(422, 'Nominal transaksi tidak valid.');
+    }
+}
+if ($action === 'pay' && $paid <= 0) {
+    json_error(422, 'Nominal pembayaran wajib diisi.');
+}
+if ($action === 'pay') {
+    $minimumPaid = max(0, $total - $downpaymentPayload);
+    if ($paid < $minimumPaid) {
+        json_error(422, 'Nominal pembayaran masih kurang dari total tagihan.');
+    }
+}
 
 try {
     $pdo->beginTransaction();
@@ -332,7 +530,9 @@ try {
             $stmt = $pdo->prepare(
                 'UPDATE sales_transactions
                  SET customer_name = :customer_name, subtotal = :subtotal, total = :total,
-                    paid_amount = :paid, change_amount = :change, discount = :discount, downpayment = :downpayment, status = "pending", transaction_at = NOW()
+                    paid_amount = :paid, change_amount = :change, discount = :discount, downpayment = :downpayment,
+                    payment_method = :payment_method, payment_note = :payment_note, is_non_cash = :is_non_cash,
+                    status = "pending", transaction_at = NOW()
                  WHERE id = :id'
             );
             $stmt->execute([
@@ -343,6 +543,9 @@ try {
                 ':change' => $change,
                 ':discount' => (float)($payload['discount'] ?? 0),
                 ':downpayment' => (float)($payload['downpayment'] ?? 0),
+                ':payment_method' => $paymentMethod,
+                ':payment_note' => $paymentNote !== '' ? $paymentNote : null,
+                ':is_non_cash' => $isNonCash,
                 ':id' => $draftId,
             ]);
             $transactionId = $draftId;
@@ -350,9 +553,9 @@ try {
             $invoiceNo = 'DRF-' . date('YmdHis') . '-' . random_int(100, 999);
             $stmt = $pdo->prepare(
                 'INSERT INTO sales_transactions
-                    (invoice_no, status, is_printed, printed_at, transaction_at, customer_name, subtotal, discount, downpayment, total, paid_amount, change_amount)
+                    (invoice_no, status, is_printed, printed_at, transaction_at, customer_name, subtotal, discount, downpayment, total, paid_amount, change_amount, payment_method, payment_note, is_non_cash)
                  VALUES
-                    (:invoice_no, "pending", 0, NULL, NOW(), :customer_name, :subtotal, :discount, :downpayment, :total, :paid, :change)'
+                    (:invoice_no, "pending", 0, NULL, NOW(), :customer_name, :subtotal, :discount, :downpayment, :total, :paid, :change, :payment_method, :payment_note, :is_non_cash)'
             );
             $stmt->execute([
                 ':invoice_no' => $invoiceNo,
@@ -363,6 +566,9 @@ try {
                 ':total' => $total,
                 ':paid' => $paid,
                 ':change' => $change,
+                ':payment_method' => $paymentMethod,
+                ':payment_note' => $paymentNote !== '' ? $paymentNote : null,
+                ':is_non_cash' => $isNonCash,
             ]);
             $transactionId = (int)$pdo->lastInsertId();
         }
@@ -386,7 +592,9 @@ try {
             $stmt = $pdo->prepare(
                 'UPDATE sales_transactions
                  SET status = "paid", customer_name = :customer_name, subtotal = :subtotal, total = :total,
-                    paid_amount = :paid, change_amount = :change, discount = :discount, downpayment = :downpayment, transaction_at = NOW(),
+                    paid_amount = :paid, change_amount = :change, discount = :discount, downpayment = :downpayment,
+                    payment_method = :payment_method, payment_note = :payment_note, is_non_cash = :is_non_cash,
+                    transaction_at = NOW(),
                      invoice_no = CASE WHEN invoice_no LIKE "DRF-%" THEN :new_invoice ELSE invoice_no END
                  WHERE id = :id'
             );
@@ -398,6 +606,9 @@ try {
                 ':change' => $change,
                 ':discount' => (float)($payload['discount'] ?? 0),
                 ':downpayment' => (float)($payload['downpayment'] ?? 0),
+                ':payment_method' => $paymentMethod,
+                ':payment_note' => $paymentNote !== '' ? $paymentNote : null,
+                ':is_non_cash' => $isNonCash,
                 ':new_invoice' => 'TRX-' . date('YmdHis') . '-' . random_int(100, 999),
                 ':id' => $draftId,
             ]);
@@ -410,9 +621,9 @@ try {
             $invoiceNo = 'TRX-' . date('YmdHis') . '-' . random_int(100, 999);
             $stmt = $pdo->prepare(
                 'INSERT INTO sales_transactions
-                    (invoice_no, status, is_printed, printed_at, transaction_at, customer_name, subtotal, discount, downpayment, total, paid_amount, change_amount)
+                    (invoice_no, status, is_printed, printed_at, transaction_at, customer_name, subtotal, discount, downpayment, total, paid_amount, change_amount, payment_method, payment_note, is_non_cash)
                  VALUES
-                    (:invoice_no, "paid", 0, NULL, NOW(), :customer_name, :subtotal, :discount, :downpayment, :total, :paid, :change)'
+                    (:invoice_no, "paid", 0, NULL, NOW(), :customer_name, :subtotal, :discount, :downpayment, :total, :paid, :change, :payment_method, :payment_note, :is_non_cash)'
             );
             $stmt->execute([
                 ':invoice_no' => $invoiceNo,
@@ -423,6 +634,9 @@ try {
                 ':total' => $total,
                 ':paid' => $paid,
                 ':change' => $change,
+                ':payment_method' => $paymentMethod,
+                ':payment_note' => $paymentNote !== '' ? $paymentNote : null,
+                ':is_non_cash' => $isNonCash,
             ]);
             $transactionId = (int)$pdo->lastInsertId();
             save_items($pdo, $transactionId, $items);
@@ -470,6 +684,39 @@ try {
         $del->execute([':id' => $id]);
         $pdo->commit();
         echo json_encode(['success' => true]);
+        exit;
+    }
+
+    if ($action === 'cancel_paid') {
+        $id = (int)($payload['transaction_id'] ?? 0);
+        $password = (string)($payload['password'] ?? '');
+        if ($id <= 0) json_error(422, 'ID transaksi tidak valid.');
+        if (!verify_current_login_password($pdo, $password)) {
+            json_error(422, 'Password login tidak sesuai.');
+        }
+
+        $check = $pdo->prepare('SELECT status, downpayment FROM sales_transactions WHERE id = :id');
+        $check->execute([':id' => $id]);
+        $row = $check->fetch(PDO::FETCH_ASSOC);
+        if (!$row) json_error(404, 'Transaksi tidak ditemukan.');
+        if ((string)$row['status'] !== 'paid') {
+            json_error(422, 'Hanya transaksi yang sudah bayar yang bisa dibatalkan.');
+        }
+
+        $stmt = $pdo->prepare(
+            'UPDATE sales_transactions
+             SET status = "pending",
+                 paid_amount = :paid_amount,
+                 change_amount = 0,
+                 transaction_at = NOW()
+             WHERE id = :id'
+        );
+        $stmt->execute([
+            ':paid_amount' => (float)($row['downpayment'] ?? 0),
+            ':id' => $id,
+        ]);
+        $pdo->commit();
+        echo json_encode(['success' => true, 'status' => 'pending']);
         exit;
     }
 

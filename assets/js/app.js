@@ -54,6 +54,8 @@ let cart = [];
 let discount = 0;
 let payment = 0;
 let downpayment = 0;
+let paymentMethod = "cash";
+let paymentNote = "";
 let activeCashierVariantId = "";
 let activeCategory = "Semua";
 let activeSearch = "";
@@ -69,6 +71,9 @@ const subtotalEl = document.getElementById("subtotalAmount");
 const totalEl = document.getElementById("totalAmount");
 const changeEl = document.getElementById("changeAmount");
 const paymentInput = document.getElementById("paymentAmount");
+const paymentAmountLabel = document.getElementById("paymentAmountLabel");
+const paymentMethodLabel = document.getElementById("paymentMethodLabel");
+const paymentMethodNoteEl = document.getElementById("paymentMethodNote");
 const discountInput = document.getElementById("discountInput");
 const discountType = document.getElementById("discountType");
 const discountAmountEl = document.getElementById("discountAmount");
@@ -77,6 +82,23 @@ const downpaymentAmountEl = document.getElementById("downpaymentAmount");
 const checkoutBtn = document.getElementById("checkoutBtn");
 const saveDraftBtn = document.getElementById("saveDraftBtn");
 const printReceiptBtn = document.getElementById("printReceiptBtn");
+const openPaymentModalBtn = document.getElementById("openPaymentModalBtn");
+const paymentModal = document.getElementById("paymentModal");
+const closePaymentModalBtn = document.getElementById("closePaymentModalBtn");
+const cancelPaymentModalBtn = document.getElementById("cancelPaymentModalBtn");
+const confirmCheckoutBtn = document.getElementById("confirmCheckoutBtn");
+const paymentAmountModal = document.getElementById("paymentAmountModal");
+const paymentNoteInput = document.getElementById("paymentNoteInput");
+const paymentModalValidation = document.getElementById("paymentModalValidation");
+const checkoutValidationNotice = document.getElementById(
+  "checkoutValidationNotice",
+);
+const paymentModalTotal = document.getElementById("paymentModalTotal");
+const paymentModalPaid = document.getElementById("paymentModalPaid");
+const paymentModalChange = document.getElementById("paymentModalChange");
+const paymentMethodCards = Array.from(
+  document.querySelectorAll(".payment-method-card"),
+);
 const searchInput = document.getElementById("searchInput");
 const clearCartBtn = document.getElementById("clearCartBtn");
 const newTransactionBtn = document.getElementById("newTransactionBtn");
@@ -102,6 +124,105 @@ const formatRupiah = (number) =>
     currency: "IDR",
     minimumFractionDigits: 0,
   }).format(number || 0);
+
+function getPaymentMethodLabel(method = paymentMethod) {
+  return method === "transfer" ? "Transfer Rek" : "Tunai";
+}
+
+function setInlineValidation(element, message = "") {
+  if (!element) return;
+  element.textContent = message;
+  element.style.display = message ? "block" : "none";
+}
+
+function computeTransactionSummary() {
+  const subtotal = cart.reduce(
+    (sum, item) => sum + item.price * item.quantity,
+    0,
+  );
+  const discountValue =
+    parseFloat(discountInput && discountInput.value ? discountInput.value : 0) ||
+    0;
+  const discountTypeValue =
+    typeof discountType !== "undefined" && discountType && discountType.value
+      ? discountType.value
+      : "nominal";
+  const discountCalc =
+    discountTypeValue === "percent"
+      ? Math.floor(subtotal * (discountValue / 100))
+      : discountValue;
+  const totalBeforeDP = Math.max(0, subtotal - discountCalc);
+  const dpValue =
+    parseFloat(
+      downpaymentInput && downpaymentInput.value ? downpaymentInput.value : 0,
+    ) || 0;
+  const dpCalc = Math.max(0, Math.min(dpValue, totalBeforeDP));
+  const total = Math.max(0, totalBeforeDP - dpCalc);
+  const enteredPayment = parseFloat(paymentInput && paymentInput.value) || 0;
+  const paidTotal = dpCalc + enteredPayment;
+  const change =
+    paymentMethod === "cash" ? Math.max(0, paidTotal - total) : 0;
+
+  return {
+    subtotal,
+    discountCalc,
+    dpCalc,
+    total,
+    enteredPayment,
+    paidTotal,
+    change,
+  };
+}
+
+function syncPaymentMethodSummary() {
+  if (paymentAmountLabel) {
+    paymentAmountLabel.textContent =
+      paymentMethod === "transfer"
+        ? "Nominal Transfer (Rp)"
+        : "Tunai Dibayar (Rp)";
+  }
+  if (paymentMethodLabel) {
+    paymentMethodLabel.textContent = getPaymentMethodLabel();
+  }
+  if (paymentMethodNoteEl) {
+    paymentMethodNoteEl.textContent =
+      paymentNote.trim() || "Belum ada keterangan pembayaran.";
+  }
+}
+
+function syncPaymentMethodCards() {
+  paymentMethodCards.forEach((card) => {
+    card.classList.toggle("active", card.dataset.method === paymentMethod);
+  });
+}
+
+function syncPaymentModalSummary() {
+  const { total, paidTotal, change } = computeTransactionSummary();
+  if (paymentModalTotal) paymentModalTotal.textContent = formatRupiah(total);
+  if (paymentModalPaid) paymentModalPaid.textContent = formatRupiah(paidTotal);
+  if (paymentModalChange)
+    paymentModalChange.textContent = formatRupiah(change);
+}
+
+function openPaymentModal() {
+  if (!paymentModal) return;
+  if (paymentAmountModal) {
+    paymentAmountModal.value = paymentInput ? paymentInput.value : "";
+  }
+  if (paymentNoteInput) {
+    paymentNoteInput.value = paymentNote;
+  }
+  syncPaymentMethodCards();
+  syncPaymentModalSummary();
+  setInlineValidation(paymentModalValidation, "");
+  paymentModal.classList.add("active");
+}
+
+function closePaymentModal() {
+  if (!paymentModal) return;
+  paymentModal.classList.remove("active");
+  setInlineValidation(paymentModalValidation, "");
+}
 
 function showToast(message, type = "info") {
   if (!toastWrap) return;
@@ -312,53 +433,26 @@ function renderCart() {
 }
 
 function updateSummary() {
-  const subtotal = cart.reduce(
-    (sum, item) => sum + item.price * item.quantity,
-    0,
-  );
-  // Ambil diskon dari input dan tipe
-  let discountValue = parseFloat(discountInput && discountInput.value ? discountInput.value : 0) || 0;
-  let discountTypeValue = typeof discountType !== 'undefined' && discountType && discountType.value ? discountType.value : 'nominal';
-  let discountCalc = 0;
-  if (discountTypeValue === 'percent') {
-    discountCalc = Math.floor(subtotal * (discountValue / 100));
-  } else {
-    discountCalc = discountValue;
-  }
+  const { subtotal, discountCalc, dpCalc, total, change, enteredPayment } =
+    computeTransactionSummary();
   discount = discountCalc;
-
-  // Ambil downpayment (DP)
-  let dpValue = parseFloat(downpaymentInput && downpaymentInput.value ? downpaymentInput.value : 0) || 0;
-  // Jangan melebihi total setelah diskon
-  const totalBeforeDP = Math.max(0, subtotal - discountCalc);
-  const dpCalc = Math.max(0, Math.min(dpValue, totalBeforeDP));
   downpayment = dpCalc;
-
-  const total = Math.max(0, totalBeforeDP - dpCalc);
-
   subtotalEl.innerText = formatRupiah(subtotal);
-  if (discountAmountEl)
-    discountAmountEl.innerText = "- " + formatRupiah(discountCalc);
-  if (downpaymentAmountEl)
-    downpaymentAmountEl.innerText = "- " + formatRupiah(dpCalc);
+  if (discountAmountEl) discountAmountEl.innerText = "- " + formatRupiah(discountCalc);
+  if (downpaymentAmountEl) downpaymentAmountEl.innerText = "- " + formatRupiah(dpCalc);
   totalEl.innerText = formatRupiah(total);
-
-  payment = parseFloat(paymentInput.value) || 0;
-  const effectivePaid = dpCalc + payment;
-  const change = Math.max(0, effectivePaid - total);
+  payment = enteredPayment;
 
   const hasUnsetVariant = cart.some((item) => item.variant_unset);
-  if (effectivePaid >= total && total > 0 && !hasUnsetVariant) {
+  if (paymentMethod === "cash" && enteredPayment > 0 && total > 0) {
     changeEl.innerText = formatRupiah(change);
-    checkoutBtn.disabled = false;
     changeEl.style.color = "var(--emerald)";
   } else {
     changeEl.innerText = "Rp 0";
-    checkoutBtn.disabled = true;
     changeEl.style.color = "var(--text-muted)";
   }
 
-  if (cart.length === 0) checkoutBtn.disabled = true;
+  checkoutBtn.disabled = cart.length === 0 || hasUnsetVariant;
   saveDraftBtn.disabled = cart.length === 0;
   if (hasUnsetVariant) {
     variantValidationNotice.style.display = "block";
@@ -368,6 +462,8 @@ function updateSummary() {
     variantValidationNotice.style.display = "none";
     variantValidationNotice.textContent = "";
   }
+  syncPaymentMethodSummary();
+  syncPaymentModalSummary();
   printReceiptBtn.disabled = cart.length === 0;
 }
 
@@ -464,6 +560,8 @@ window.loadDraftTransaction = async (id) => {
     // Set discount and downpayment inputs when loading draft
     if (discountInput) discountInput.value = typeof tx.discount !== 'undefined' ? Number(tx.discount) : 0;
     if (downpaymentInput) downpaymentInput.value = typeof tx.downpayment !== 'undefined' ? Number(tx.downpayment) : 0;
+    paymentMethod = tx.payment_method === "transfer" ? "transfer" : "cash";
+    paymentNote = tx.payment_note || "";
     // For payment input show the extra paid amount beyond DP if transaction already paid
     if (paymentInput) {
       if (tx.status === 'paid') {
@@ -482,31 +580,20 @@ window.loadDraftTransaction = async (id) => {
 };
 
 async function submitTransaction(actionType) {
-  const subtotal = cart.reduce(
-    (sum, item) => sum + item.price * item.quantity,
-    0,
-  );
-  // Recompute discount the same way as updateSummary
-  const discountValue = parseFloat(discountInput && discountInput.value ? discountInput.value : 0) || 0;
-  const discountTypeValue = typeof discountType !== 'undefined' && discountType && discountType.value ? discountType.value : 'nominal';
-  let discountCalc = 0;
-  if (discountTypeValue === 'percent') {
-    discountCalc = Math.floor(subtotal * (discountValue / 100));
-  } else {
-    discountCalc = discountValue;
-  }
+  const { subtotal, discountCalc, dpCalc, total, enteredPayment } =
+    computeTransactionSummary();
   discount = discountCalc;
-
-  // Downpayment
-  const dpValue = parseFloat(downpaymentInput && downpaymentInput.value ? downpaymentInput.value : 0) || 0;
-  const totalBeforeDP = Math.max(0, subtotal - discountCalc);
-  const dpCalc = Math.max(0, Math.min(dpValue, totalBeforeDP));
-
-  const total = Math.max(0, totalBeforeDP); // total before applying downpayment
-  const paid = parseFloat(paymentInput.value) || 0;
-  // paidTotal depends on action: if paying now, include dp+paid; if saving draft, paid is dp only
-  const paidTotal = actionType === 'pay' ? paid + dpCalc : actionType === 'save_draft' ? dpCalc : 0;
-  const change = Math.max(0, paidTotal - total);
+  const grossTotal = Math.max(0, subtotal - discountCalc);
+  const paidTotal =
+    actionType === "pay"
+      ? dpCalc + enteredPayment
+      : actionType === "save_draft"
+        ? dpCalc
+        : 0;
+  const change =
+    actionType === "pay" && paymentMethod === "cash"
+      ? Math.max(0, paidTotal - total)
+      : 0;
 
   const response = await fetch("checkout_actions.php", {
     method: "POST",
@@ -518,10 +605,11 @@ async function submitTransaction(actionType) {
       subtotal,
       discount: discountCalc,
       downpayment: dpCalc,
-      // send total before downpayment so DB keeps the original payable amount
-      total: total,
+      total: grossTotal,
       paid_amount: paidTotal,
       change_amount: actionType === "pay" ? change : 0,
+      payment_method: paymentMethod,
+      payment_note: paymentNote.trim(),
       items: cart.map((item) => ({
         id: item.id,
         code: item.code,
@@ -537,7 +625,7 @@ async function submitTransaction(actionType) {
   if (!response.ok || !result.success) {
     throw new Error(result.message || "Gagal memproses transaksi");
   }
-  return { result, subtotal, total, paid: paidTotal, change };
+  return { result, subtotal, total: grossTotal, paid: paidTotal, change };
 }
 
 function normalizeSavedCartItem(item) {
@@ -722,6 +810,8 @@ function generateReceiptHTML(total, paid, change) {
   const headerText = receiptTemplate.header_text || "";
   const footerText =
     receiptTemplate.footer_text || "Terima kasih sudah berbelanja";
+  const paymentMethodLabelText = getPaymentMethodLabel();
+  const paymentNoteText = paymentNote.trim();
   const thermalWidth = paperWidth === 80 ? "76mm" : "58mm";
 
   const itemsHTML = cart
@@ -778,6 +868,8 @@ function generateReceiptHTML(total, paid, change) {
       sisa_bayar: escapeHtml(formatRupiah(sisaBayar)),
       paid_amount: escapeHtml(formatRupiah(paid)),
       change_amount: escapeHtml(formatRupiah(change)),
+      payment_method: escapeHtml(paymentMethodLabelText),
+      payment_note: escapeHtml(paymentNoteText),
       status: escapeHtml(statusText),
       footer_text: escapeHtml(footerText),
     });
@@ -818,9 +910,10 @@ function generateReceiptHTML(total, paid, change) {
         <span>${formatRupiah(sisaBayar)}</span>
       </div>
       <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px;">
-        <span>Tunai</span>
+        <span>${paymentMethodLabelText}</span>
         <span>${formatRupiah(paid)}</span>
       </div>
+      ${paymentNoteText ? `<div style="font-size: 11px; color: #555; margin-bottom: 5px;">Ket: ${escapeHtml(paymentNoteText)}</div>` : ""}
             <div style="display: flex; justify-content: space-between; font-size: 12px;">
                 <span>Kembali</span>
                 <span>${formatRupiah(change)}</span>
@@ -832,6 +925,65 @@ function generateReceiptHTML(total, paid, change) {
             </div>
         </div>
     `;
+}
+
+async function processCheckoutPayment() {
+  const { total, enteredPayment, paidTotal, change } = computeTransactionSummary();
+  if (cart.length === 0) {
+    setInlineValidation(checkoutValidationNotice, "Keranjang masih kosong.");
+    closePaymentModal();
+    return;
+  }
+  if (enteredPayment <= 0) {
+    const message = `Nominal pembayaran ${getPaymentMethodLabel().toLowerCase()} wajib diisi.`;
+    setInlineValidation(paymentModalValidation, message);
+    setInlineValidation(checkoutValidationNotice, message);
+    return;
+  }
+  if (paidTotal < total) {
+    const message =
+      paymentMethod === "transfer"
+        ? "Nominal transfer masih kurang dari total yang harus dibayar."
+        : "Nominal tunai masih kurang dari total yang harus dibayar.";
+    setInlineValidation(paymentModalValidation, message);
+    setInlineValidation(checkoutValidationNotice, message);
+    return;
+  }
+
+  const original = confirmCheckoutBtn.innerHTML;
+  confirmCheckoutBtn.disabled = true;
+  confirmCheckoutBtn.innerText = "Menyimpan...";
+
+  try {
+    const { result } = await submitTransaction("pay");
+    closePaymentModal();
+    setInlineValidation(checkoutValidationNotice, "");
+    printArea.innerHTML = generateReceiptHTML(total, paidTotal, change);
+    window.print();
+
+    setTimeout(() => {
+      cart = [];
+      currentDraftId = 0;
+      paymentInput.value = "";
+      paymentMethod = "cash";
+      paymentNote = "";
+      if (customerNameInput) customerNameInput.value = "";
+      renderCart();
+      showToast(
+        `Transaksi tersimpan (${result.invoice_no || "OK"})`,
+        "success",
+      );
+    }, 500);
+  } catch (err) {
+    setInlineValidation(
+      paymentModalValidation,
+      `Gagal checkout: ${err.message}`,
+    );
+  } finally {
+    confirmCheckoutBtn.disabled = false;
+    confirmCheckoutBtn.innerHTML = original;
+    updateSummary();
+  }
 }
 
 checkoutBtn.addEventListener("click", async () => {
@@ -903,21 +1055,27 @@ function startNewTransaction() {
   cart = [];
   currentDraftId = 0;
   paymentInput.value = "";
+  paymentMethod = "cash";
+  paymentNote = "";
+  if (paymentAmountModal) paymentAmountModal.value = "";
+  if (paymentNoteInput) paymentNoteInput.value = "";
   if (customerNameInput) customerNameInput.value = "";
+  setInlineValidation(checkoutValidationNotice, "");
+  setInlineValidation(paymentModalValidation, "");
   renderCart();
   showToast("Keranjang baru siap. Silakan input transaksi baru.", "success");
 }
 
 window.openReceiptModal = () => {
   if (cart.length === 0) return;
-  const subtotal = cart.reduce(
-    (sum, item) => sum + item.price * item.quantity,
-    0,
+  const { subtotal, discountCalc, dpCalc, enteredPayment, change } =
+    computeTransactionSummary();
+  const grossTotal = Math.max(0, subtotal - discountCalc);
+  receiptContent.innerHTML = generateReceiptHTML(
+    grossTotal,
+    dpCalc + enteredPayment,
+    change,
   );
-  const total = Math.max(0, subtotal - discount);
-  const paid = parseFloat(paymentInput.value) || 0;
-  const change = Math.max(0, paid - total);
-  receiptContent.innerHTML = generateReceiptHTML(total, paid, change);
   receiptModal.classList.add("active");
   feather.replace();
 };
@@ -928,19 +1086,78 @@ window.closeReceiptModal = () => {
 
 window.doPrint = () => {
   if (cart.length === 0) return;
-  const subtotal = cart.reduce(
-    (sum, item) => sum + item.price * item.quantity,
-    0,
+  const { subtotal, discountCalc, dpCalc, enteredPayment, change } =
+    computeTransactionSummary();
+  const grossTotal = Math.max(0, subtotal - discountCalc);
+  printArea.innerHTML = generateReceiptHTML(
+    grossTotal,
+    dpCalc + enteredPayment,
+    change,
   );
-  const total = Math.max(0, subtotal - discount);
-  const paid = parseFloat(paymentInput.value) || 0;
-  const change = Math.max(0, paid - total);
-  printArea.innerHTML = generateReceiptHTML(total, paid, change);
   window.print();
 };
 
 // --- Events ---
-paymentInput.addEventListener("input", updateSummary);
+if (openPaymentModalBtn) {
+  openPaymentModalBtn.addEventListener("click", openPaymentModal);
+}
+if (closePaymentModalBtn) {
+  closePaymentModalBtn.addEventListener("click", closePaymentModal);
+}
+if (cancelPaymentModalBtn) {
+  cancelPaymentModalBtn.addEventListener("click", closePaymentModal);
+}
+if (paymentAmountModal) {
+  paymentAmountModal.addEventListener("input", () => {
+    if (paymentInput) paymentInput.value = paymentAmountModal.value;
+    setInlineValidation(paymentModalValidation, "");
+    setInlineValidation(checkoutValidationNotice, "");
+    updateSummary();
+  });
+}
+if (paymentNoteInput) {
+  paymentNoteInput.addEventListener("input", () => {
+    paymentNote = paymentNoteInput.value || "";
+    syncPaymentMethodSummary();
+    setInlineValidation(paymentModalValidation, "");
+  });
+}
+paymentMethodCards.forEach((card) => {
+  card.addEventListener("click", () => {
+    paymentMethod = card.dataset.method === "transfer" ? "transfer" : "cash";
+    syncPaymentMethodCards();
+    syncPaymentMethodSummary();
+    updateSummary();
+  });
+});
+if (confirmCheckoutBtn) {
+  confirmCheckoutBtn.addEventListener("click", processCheckoutPayment);
+}
+if (paymentModal) {
+  paymentModal.addEventListener("click", (e) => {
+    if (e.target === paymentModal) closePaymentModal();
+  });
+}
+if (checkoutBtn) {
+  checkoutBtn.addEventListener(
+    "click",
+    (e) => {
+      if (cart.length === 0 || checkoutBtn.disabled) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      setInlineValidation(checkoutValidationNotice, "");
+      openPaymentModal();
+    },
+    true,
+  );
+}
+paymentInput.addEventListener("input", () => {
+  if (paymentAmountModal && document.activeElement !== paymentAmountModal) {
+    paymentAmountModal.value = paymentInput.value;
+  }
+  setInlineValidation(checkoutValidationNotice, "");
+  updateSummary();
+});
 if (discountInput) {
   discountInput.addEventListener("input", updateSummary);
 }
@@ -991,6 +1208,13 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.key === "Enter") {
+    if (paymentModal && paymentModal.classList.contains("active")) {
+      if (document.activeElement !== paymentNoteInput) {
+        e.preventDefault();
+        processCheckoutPayment();
+      }
+      return;
+    }
     if (document.activeElement === searchInput) {
       if (
         productsGrid.children.length > 0 &&
@@ -1001,7 +1225,7 @@ document.addEventListener("keydown", (e) => {
         activeSearch = "";
         filterAndRenderProducts();
       }
-    } else if (!checkoutBtn.disabled && paymentInput.value !== "") {
+    } else if (!checkoutBtn.disabled) {
       e.preventDefault();
       checkoutBtn.click();
     }

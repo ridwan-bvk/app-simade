@@ -41,6 +41,18 @@ $pdo->exec(
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
 );
+$hasPaymentMethod = $pdo->query("SHOW COLUMNS FROM sales_transactions LIKE 'payment_method'")->fetch(PDO::FETCH_ASSOC);
+if (!$hasPaymentMethod) {
+    $pdo->exec("ALTER TABLE sales_transactions ADD COLUMN payment_method ENUM('cash','transfer') NOT NULL DEFAULT 'cash' AFTER change_amount");
+}
+$hasPaymentNote = $pdo->query("SHOW COLUMNS FROM sales_transactions LIKE 'payment_note'")->fetch(PDO::FETCH_ASSOC);
+if (!$hasPaymentNote) {
+    $pdo->exec("ALTER TABLE sales_transactions ADD COLUMN payment_note VARCHAR(255) NULL AFTER payment_method");
+}
+$hasIsNonCash = $pdo->query("SHOW COLUMNS FROM sales_transactions LIKE 'is_non_cash'")->fetch(PDO::FETCH_ASSOC);
+if (!$hasIsNonCash) {
+    $pdo->exec("ALTER TABLE sales_transactions ADD COLUMN is_non_cash TINYINT(1) NOT NULL DEFAULT 0 AFTER payment_note");
+}
 $pdo->exec(
     'CREATE TABLE IF NOT EXISTS sales_transaction_items (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -86,7 +98,18 @@ function rupiah($v): string
     return 'Rp ' . number_format((float)$v, 0, ',', '.');
 }
 
-function fetch_report_data(PDO $pdo, string $startDate, string $endDate, string $status): array
+function payment_filter_label(string $value): string
+{
+    if ($value === 'cash') {
+        return 'Tunai';
+    }
+    if ($value === 'non_cash') {
+        return 'Non Tunai';
+    }
+    return 'Semua';
+}
+
+function fetch_report_data(PDO $pdo, string $startDate, string $endDate, string $status, string $paymentFilter): array
 {
     $rangeWhere = 'st.transaction_at >= :start_dt AND st.transaction_at < :end_dt';
     $baseQtyExpr = 'COALESCE(NULLIF(sti.base_qty_total,0), (sti.qty * COALESCE(NULLIF(sti.unit_base_qty_snapshot,0),1)))';
@@ -101,6 +124,15 @@ function fetch_report_data(PDO $pdo, string $startDate, string $endDate, string 
         $statusWhere = ' AND st.status = :status';
         $statusParams[':status'] = $status;
     }
+    $paymentWhere = '';
+    $paymentParams = [];
+    if ($paymentFilter === 'cash') {
+        $paymentWhere = " AND COALESCE(st.payment_method, CASE WHEN COALESCE(st.is_non_cash, 0) = 1 THEN 'transfer' ELSE 'cash' END) = :payment_method";
+        $paymentParams[':payment_method'] = 'cash';
+    } elseif ($paymentFilter === 'non_cash') {
+        $paymentWhere = " AND COALESCE(st.payment_method, CASE WHEN COALESCE(st.is_non_cash, 0) = 1 THEN 'transfer' ELSE 'transfer' END) = :payment_method";
+        $paymentParams[':payment_method'] = 'transfer';
+    }
 
     $summaryStmt = $pdo->prepare(
         "SELECT
@@ -109,9 +141,9 @@ function fetch_report_data(PDO $pdo, string $startDate, string $endDate, string 
             SUM(CASE WHEN st.status = 'paid' THEN st.total ELSE 0 END) AS omzet_paid,
             SUM(CASE WHEN st.status = 'pending' THEN st.total ELSE 0 END) AS omzet_pending
          FROM sales_transactions st
-         WHERE {$rangeWhere} {$statusWhere}"
+         WHERE {$rangeWhere} {$statusWhere} {$paymentWhere}"
     );
-    $summaryStmt->execute($baseParams + $statusParams);
+    $summaryStmt->execute($baseParams + $statusParams + $paymentParams);
     $summary = $summaryStmt->fetch(PDO::FETCH_ASSOC) ?: [];
 
     $baseQtyWhere = $rangeWhere;
@@ -119,6 +151,13 @@ function fetch_report_data(PDO $pdo, string $startDate, string $endDate, string 
     if ($status !== 'all') {
         $baseQtyWhere .= ' AND st.status = :status_base';
         $baseQtyParams[':status_base'] = $status;
+    }
+    if ($paymentFilter === 'cash') {
+        $baseQtyWhere .= " AND COALESCE(st.payment_method, CASE WHEN COALESCE(st.is_non_cash, 0) = 1 THEN 'transfer' ELSE 'cash' END) = :payment_method_base";
+        $baseQtyParams[':payment_method_base'] = 'cash';
+    } elseif ($paymentFilter === 'non_cash') {
+        $baseQtyWhere .= " AND COALESCE(st.payment_method, CASE WHEN COALESCE(st.is_non_cash, 0) = 1 THEN 'transfer' ELSE 'transfer' END) = :payment_method_base";
+        $baseQtyParams[':payment_method_base'] = 'transfer';
     }
     $baseQtyStmt = $pdo->prepare(
         "SELECT COALESCE(SUM({$baseQtyExpr}), 0) AS total_base_qty
@@ -137,9 +176,9 @@ function fetch_report_data(PDO $pdo, string $startDate, string $endDate, string 
          FROM sales_transaction_items sti
          INNER JOIN sales_transactions st ON st.id = sti.transaction_id
          LEFT JOIN products p ON p.id = sti.product_id
-         WHERE {$rangeWhere} AND st.status = 'paid'"
+         WHERE {$rangeWhere} AND st.status = 'paid' {$paymentWhere}"
     );
-    $labaSummaryStmt->execute($baseParams);
+    $labaSummaryStmt->execute($baseParams + $paymentParams);
     $labaSummary = $labaSummaryStmt->fetch(PDO::FETCH_ASSOC) ?: [];
 
     $detailStmt = $pdo->prepare(
@@ -148,6 +187,7 @@ function fetch_report_data(PDO $pdo, string $startDate, string $endDate, string 
             st.invoice_no,
             st.transaction_at,
             st.status,
+            COALESCE(st.payment_method, CASE WHEN COALESCE(st.is_non_cash, 0) = 1 THEN 'transfer' ELSE 'transfer' END) AS payment_method,
             COALESCE(st.customer_name, 'Pelanggan Umum') AS customer_name,
             sti.product_code,
             sti.product_name,
@@ -164,10 +204,10 @@ function fetch_report_data(PDO $pdo, string $startDate, string $endDate, string 
          FROM sales_transaction_items sti
          INNER JOIN sales_transactions st ON st.id = sti.transaction_id
          LEFT JOIN products p ON p.id = sti.product_id
-         WHERE {$rangeWhere} {$statusWhere}
+         WHERE {$rangeWhere} {$statusWhere} {$paymentWhere}
          ORDER BY st.transaction_at DESC, st.id DESC, sti.id ASC"
     );
-    $detailStmt->execute($baseParams + $statusParams);
+    $detailStmt->execute($baseParams + $statusParams + $paymentParams);
     $detailRows = $detailStmt->fetchAll(PDO::FETCH_ASSOC);
 
     $rekapStmt = $pdo->prepare(
@@ -178,11 +218,11 @@ function fetch_report_data(PDO $pdo, string $startDate, string $endDate, string 
             SUM(CASE WHEN st.status = 'paid' THEN st.total ELSE 0 END) AS omzet_paid,
             SUM(CASE WHEN st.status = 'pending' THEN st.total ELSE 0 END) AS omzet_pending
          FROM sales_transactions st
-         WHERE {$rangeWhere}
+         WHERE {$rangeWhere} {$paymentWhere}
          GROUP BY DATE(st.transaction_at)
          ORDER BY tx_date DESC"
     );
-    $rekapStmt->execute($baseParams);
+    $rekapStmt->execute($baseParams + $paymentParams);
     $rekapRows = $rekapStmt->fetchAll(PDO::FETCH_ASSOC);
 
     $labaStmt = $pdo->prepare(
@@ -200,11 +240,11 @@ function fetch_report_data(PDO $pdo, string $startDate, string $endDate, string 
          FROM sales_transaction_items sti
          INNER JOIN sales_transactions st ON st.id = sti.transaction_id
          LEFT JOIN products p ON p.id = sti.product_id
-         WHERE {$rangeWhere}  AND st.status = 'paid'
+         WHERE {$rangeWhere}  AND st.status = 'paid' {$paymentWhere}
          GROUP BY sti.product_name, COALESCE(sti.variant_name, '-'), COALESCE(p.harga_beli, 0)
          ORDER BY laba_total DESC, omzet_total DESC"
     );
-    $labaStmt->execute($baseParams);
+    $labaStmt->execute($baseParams + $paymentParams);
     $labaRows = $labaStmt->fetchAll(PDO::FETCH_ASSOC);
 
     return [
@@ -216,7 +256,7 @@ function fetch_report_data(PDO $pdo, string $startDate, string $endDate, string 
     ];
 }
 
-function sync_missing_unit_snapshots(PDO $pdo, string $startDate, string $endDate, string $status): int
+function sync_missing_unit_snapshots(PDO $pdo, string $startDate, string $endDate, string $status, string $paymentFilter): int
 {
     $where = [
         'st.transaction_at >= :start_dt',
@@ -229,6 +269,13 @@ function sync_missing_unit_snapshots(PDO $pdo, string $startDate, string $endDat
     if ($status !== 'all') {
         $where[] = 'st.status = :status';
         $params[':status'] = $status;
+    }
+    if ($paymentFilter === 'cash') {
+        $where[] = "COALESCE(st.payment_method, CASE WHEN COALESCE(st.is_non_cash, 0) = 1 THEN 'transfer' ELSE 'cash' END) = :payment_method";
+        $params[':payment_method'] = 'cash';
+    } elseif ($paymentFilter === 'non_cash') {
+        $where[] = "COALESCE(st.payment_method, CASE WHEN COALESCE(st.is_non_cash, 0) = 1 THEN 'transfer' ELSE 'transfer' END) = :payment_method";
+        $params[':payment_method'] = 'transfer';
     }
 
     $sql = "UPDATE sales_transaction_items sti
@@ -258,14 +305,14 @@ function sync_missing_unit_snapshots(PDO $pdo, string $startDate, string $endDat
     return (int)$stmt->rowCount();
 }
 
-function output_csv_export(array $data, string $startDate, string $endDate, string $status): void
+function output_csv_export(array $data, string $startDate, string $endDate, string $status, string $paymentFilter): void
 {
     $filename = "laporan_transaksi_{$startDate}_{$endDate}.csv";
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename="' . $filename . '"');
 
     $out = fopen('php://output', 'w');
-    fputcsv($out, ['Laporan Transaksi', $startDate . ' s/d ' . $endDate, 'Status', strtoupper($status)]);
+    fputcsv($out, ['Laporan Transaksi', $startDate . ' s/d ' . $endDate, 'Status', strtoupper($status), 'Cara Bayar', payment_filter_label($paymentFilter)]);
     fputcsv($out, []);
     fputcsv($out, ['RINGKASAN']);
     fputcsv($out, ['Jumlah Transaksi', (string)($data['summary']['total_trx'] ?? 0)]);
@@ -277,7 +324,7 @@ function output_csv_export(array $data, string $startDate, string $endDate, stri
     fputcsv($out, []);
 
     fputcsv($out, ['DETAIL TRANSAKSI']);
-    fputcsv($out, ['No', 'Waktu', 'Invoice', 'Pelanggan', 'Status', 'Produk', 'Varian', 'Qty', 'Satuan', 'Konversi Base', 'Total Base Qty', 'Harga Jual', 'Subtotal', 'Harga Beli', 'Modal', 'Laba']);
+    fputcsv($out, ['No', 'Waktu', 'Invoice', 'Pelanggan', 'Status', 'Cara Bayar', 'Produk', 'Varian', 'Qty', 'Satuan', 'Konversi Base', 'Total Base Qty', 'Harga Jual', 'Subtotal', 'Harga Beli', 'Modal', 'Laba']);
     // group by invoice for numbering
     $lastInvoiceCsv = null;
     $noCsv = 0;
@@ -296,6 +343,7 @@ function output_csv_export(array $data, string $startDate, string $endDate, stri
             $row['invoice_no'] ?? '',
             $row['customer_name'] ?? '',
             $row['status'] ?? '',
+            (($row['payment_method'] ?? '') === 'cash' ? 'Tunai' : 'Non Tunai'),
             $row['product_name'] ?? '',
             $row['variant_name'] ?? '',
             $row['qty'] ?? 0,
@@ -344,14 +392,14 @@ function output_csv_export(array $data, string $startDate, string $endDate, stri
     exit;
 }
 
-function output_excel_export(array $data, string $startDate, string $endDate, string $status): void
+function output_excel_export(array $data, string $startDate, string $endDate, string $status, string $paymentFilter): void
 {
     $filename = "laporan_transaksi_{$startDate}_{$endDate}.xls";
     header('Content-Type: application/vnd.ms-excel; charset=utf-8');
     header('Content-Disposition: attachment; filename="' . $filename . '"');
     echo '<html><head><meta charset="UTF-8"><style>table{border-collapse:collapse;}th,td{border:1px solid #999;padding:4px;font-size:12px;}th{background:#eee;}</style></head><body>';
     echo '<h3>Laporan Transaksi</h3>';
-    echo '<p>Periode: ' . htmlspecialchars($startDate . ' s/d ' . $endDate) . ' | Status: ' . htmlspecialchars(strtoupper($status)) . '</p>';
+    echo '<p>Periode: ' . htmlspecialchars($startDate . ' s/d ' . $endDate) . ' | Status: ' . htmlspecialchars(strtoupper($status)) . ' | Cara Bayar: ' . htmlspecialchars(payment_filter_label($paymentFilter)) . '</p>';
     echo '<table>';
     echo '<tr><th colspan="2">Ringkasan</th></tr>';
     echo '<tr><td>Jumlah Transaksi</td><td>' . (float)($data['summary']['total_trx'] ?? 0) . '</td></tr>';
@@ -362,8 +410,8 @@ function output_excel_export(array $data, string $startDate, string $endDate, st
     echo '<tr><td>Laba Kotor</td><td>' . (float)($data['laba_summary']['laba_kotor'] ?? 0) . '</td></tr>';
     echo '</table><br>';
 
-    echo '<table><tr><th colspan="16">Detail Transaksi</th></tr>';
-    echo '<tr><th>No</th><th>Waktu</th><th>Invoice</th><th>Pelanggan</th><th>Status</th><th>Produk</th><th>Varian</th><th>Qty</th><th>Satuan</th><th>Konversi Base</th><th>Total Base Qty</th><th>Harga Jual</th><th>Subtotal</th><th>Harga Beli</th><th>Modal</th><th>Laba</th></tr>';
+    echo '<table><tr><th colspan="17">Detail Transaksi</th></tr>';
+    echo '<tr><th>No</th><th>Waktu</th><th>Invoice</th><th>Pelanggan</th><th>Status</th><th>Cara Bayar</th><th>Produk</th><th>Varian</th><th>Qty</th><th>Satuan</th><th>Konversi Base</th><th>Total Base Qty</th><th>Harga Jual</th><th>Subtotal</th><th>Harga Beli</th><th>Modal</th><th>Laba</th></tr>';
     // group numbering for invoice
     $lastInvoiceExcel = null;
     $noExcel = 0;
@@ -382,6 +430,7 @@ function output_excel_export(array $data, string $startDate, string $endDate, st
         echo '<td>' . htmlspecialchars((string)($row['invoice_no'] ?? '')) . '</td>';
         echo '<td>' . htmlspecialchars((string)($row['customer_name'] ?? '')) . '</td>';
         echo '<td>' . htmlspecialchars((string)($row['status'] ?? '')) . '</td>';
+        echo '<td>' . htmlspecialchars(($row['payment_method'] ?? '') === 'cash' ? 'Tunai' : 'Non Tunai') . '</td>';
         echo '<td>' . htmlspecialchars((string)($row['product_name'] ?? '')) . '</td>';
         echo '<td>' . htmlspecialchars((string)($row['variant_name'] ?? '')) . '</td>';
         echo '<td>' . (float)($row['qty'] ?? 0) . '</td>';
@@ -434,8 +483,12 @@ function output_excel_export(array $data, string $startDate, string $endDate, st
 $startDate = trim((string)($_GET['start_date'] ?? date('Y-m-01')));
 $endDate = trim((string)($_GET['end_date'] ?? date('Y-m-d')));
 $status = trim((string)($_GET['status'] ?? 'all'));
+$paymentFilter = trim((string)($_GET['payment_method'] ?? 'all'));
 if (!in_array($status, ['all', 'pending', 'paid'], true)) {
     $status = 'all';
+}
+if (!in_array($paymentFilter, ['all', 'cash', 'non_cash'], true)) {
+    $paymentFilter = 'all';
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'refresh_unit_snapshot') {
@@ -445,19 +498,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') ==
     if (!in_array($statusPost, ['all', 'pending', 'paid'], true)) {
         $statusPost = 'all';
     }
-    $updated = sync_missing_unit_snapshots($pdo, $startDatePost, $endDatePost, $statusPost);
-    header('Location: laporan.php?start_date=' . urlencode($startDatePost) . '&end_date=' . urlencode($endDatePost) . '&status=' . urlencode($statusPost) . '&msg=unit_refresh_done&updated=' . $updated);
+    $paymentFilterPost = trim((string)($_POST['payment_method'] ?? 'all'));
+    if (!in_array($paymentFilterPost, ['all', 'cash', 'non_cash'], true)) {
+        $paymentFilterPost = 'all';
+    }
+    $updated = sync_missing_unit_snapshots($pdo, $startDatePost, $endDatePost, $statusPost, $paymentFilterPost);
+    header('Location: laporan.php?start_date=' . urlencode($startDatePost) . '&end_date=' . urlencode($endDatePost) . '&status=' . urlencode($statusPost) . '&payment_method=' . urlencode($paymentFilterPost) . '&msg=unit_refresh_done&updated=' . $updated);
     exit;
 }
 
-$data = fetch_report_data($pdo, $startDate, $endDate, $status);
+$data = fetch_report_data($pdo, $startDate, $endDate, $status, $paymentFilter);
 
 $exportType = trim((string)($_GET['export'] ?? ''));
 if ($exportType === 'csv') {
-    output_csv_export($data, $startDate, $endDate, $status);
+    output_csv_export($data, $startDate, $endDate, $status, $paymentFilter);
 }
 if ($exportType === 'excel') {
-    output_excel_export($data, $startDate, $endDate, $status);
+    output_excel_export($data, $startDate, $endDate, $status, $paymentFilter);
 }
 
 $summary = $data['summary'];
@@ -711,18 +768,26 @@ foreach ($detailRows as $dr) {
                 <label for="end_date">Tanggal Akhir</label>
                 <input type="date" id="end_date" name="end_date" value="<?= htmlspecialchars($endDate) ?>">
             </div>
-            <div>
-                <label for="status">Status Transaksi</label>
-                <select id="status" name="status">
-                    <option value="all" <?= $status === 'all' ? 'selected' : '' ?>>Semua</option>
-                    <option value="paid" <?= $status === 'paid' ? 'selected' : '' ?>>Sudah Bayar</option>
-                    <option value="pending" <?= $status === 'pending' ? 'selected' : '' ?>>Belum Bayar</option>
-                </select>
-            </div>
+              <div>
+                  <label for="status">Status Transaksi</label>
+                  <select id="status" name="status">
+                      <option value="all" <?= $status === 'all' ? 'selected' : '' ?>>Semua</option>
+                      <option value="paid" <?= $status === 'paid' ? 'selected' : '' ?>>Sudah Bayar</option>
+                      <option value="pending" <?= $status === 'pending' ? 'selected' : '' ?>>Belum Bayar</option>
+                  </select>
+              </div>
+              <div>
+                  <label for="payment_method">Cara Bayar</label>
+                  <select id="payment_method" name="payment_method">
+                      <option value="all" <?= $paymentFilter === 'all' ? 'selected' : '' ?>>Semua</option>
+                      <option value="cash" <?= $paymentFilter === 'cash' ? 'selected' : '' ?>>Tunai</option>
+                      <option value="non_cash" <?= $paymentFilter === 'non_cash' ? 'selected' : '' ?>>Non Tunai</option>
+                  </select>
+              </div>
             <button class="btn-primary" type="submit" style="height:40px;">Terapkan</button>
             <button class="btn-secondary" type="button" style="height:40px;" onclick="openPrintChooser()">Cetak</button>
-            <a class="btn-secondary" style="height:40px;display:inline-flex;align-items:center;justify-content:center;text-decoration:none;" href="?start_date=<?= urlencode($startDate) ?>&end_date=<?= urlencode($endDate) ?>&status=<?= urlencode($status) ?>&export=excel">Save as Excel</a>
-            <a class="btn-secondary" style="height:40px;display:inline-flex;align-items:center;justify-content:center;text-decoration:none;" href="?start_date=<?= urlencode($startDate) ?>&end_date=<?= urlencode($endDate) ?>&status=<?= urlencode($status) ?>&export=csv">Save as CSV</a>
+            <a class="btn-secondary" style="height:40px;display:inline-flex;align-items:center;justify-content:center;text-decoration:none;" href="?start_date=<?= urlencode($startDate) ?>&end_date=<?= urlencode($endDate) ?>&status=<?= urlencode($status) ?>&payment_method=<?= urlencode($paymentFilter) ?>&export=excel">Save as Excel</a>
+            <a class="btn-secondary" style="height:40px;display:inline-flex;align-items:center;justify-content:center;text-decoration:none;" href="?start_date=<?= urlencode($startDate) ?>&end_date=<?= urlencode($endDate) ?>&status=<?= urlencode($status) ?>&payment_method=<?= urlencode($paymentFilter) ?>&export=csv">Save as CSV</a>
         </form>
 
         <div class="cards">
@@ -764,7 +829,7 @@ foreach ($detailRows as $dr) {
             </summary>
             <div class="panel-body">
             <div class="table-wrap">
-                <table class="table" style="min-width:1240px;">
+                <table class="table" style="min-width:1360px;">
                     <thead>
                     <tr>
                         <th class="sortable-th" data-sort-type="num">No <span class="sort-icon">↕</span></th>
@@ -772,6 +837,7 @@ foreach ($detailRows as $dr) {
                         <th class="sortable-th" data-sort-type="text">Invoice <span class="sort-icon">↕</span></th>
                         <th class="sortable-th" data-sort-type="text">Pelanggan <span class="sort-icon">↕</span></th>
                         <th class="sortable-th" data-sort-type="text">Status <span class="sort-icon">↕</span></th>
+                        <th class="sortable-th" data-sort-type="text">Cara Bayar <span class="sort-icon">↕</span></th>
                         <th class="sortable-th" data-sort-type="text">Produk <span class="sort-icon">↕</span></th>
                         <th class="sortable-th" data-sort-type="text">Varian <span class="sort-icon">↕</span></th>
                         <th class="num sortable-th" data-sort-type="num">Qty <span class="sort-icon">↕</span></th>
@@ -782,6 +848,7 @@ foreach ($detailRows as $dr) {
                                 <input type="hidden" name="start_date" value="<?= htmlspecialchars($startDate) ?>">
                                 <input type="hidden" name="end_date" value="<?= htmlspecialchars($endDate) ?>">
                                 <input type="hidden" name="status" value="<?= htmlspecialchars($status) ?>">
+                                <input type="hidden" name="payment_method" value="<?= htmlspecialchars($paymentFilter) ?>">
                                 <button type="submit" class="btn-refresh-icon" title="Refresh satuan dari master produk">
                                     <i data-feather="refresh-cw" style="width:13px;height:13px;"></i>
                                 </button>
@@ -799,7 +866,7 @@ foreach ($detailRows as $dr) {
                     </thead>
                     <tbody id="detailBody">
                     <?php if (empty($detailRows)): ?>
-                        <tr><td colspan="16" style="text-align:center;color:var(--text-muted);padding:16px;">Tidak ada data transaksi.</td></tr>
+                        <tr><td colspan="17" style="text-align:center;color:var(--text-muted);padding:16px;">Tidak ada data transaksi.</td></tr>
                     <?php else: ?>
                         <?php
                         // invoice grouping for numbering
@@ -824,6 +891,7 @@ foreach ($detailRows as $dr) {
                                 <td><?= htmlspecialchars((string)$row['customer_name']) ?></td>
                                 <td><span class="badge <?= $row['status'] === 'paid' ? 'paid' : 'pending' ?>">
                                     <?= $row['status'] === 'paid' ? 'Paid' : 'Pending' ?></span></td>
+                                <td><?= (($row['payment_method'] ?? '') === 'cash') ? 'Tunai' : 'Non Tunai' ?></td>
                                 <td><?= htmlspecialchars((string)$row['product_name']) ?></td>
                                 <td><?= htmlspecialchars((string)$row['variant_name']) ?></td>
                                 <td class="num"><?= number_format((float)$row['qty'], 0, ',', '.') ?></td>
@@ -842,7 +910,7 @@ foreach ($detailRows as $dr) {
                     <?php if (!empty($detailRows)): ?>
                     <tfoot>
                         <tr class="tfoot-total">
-                            <td colspan="6">Total</td>
+                            <td colspan="8">Total</td>
                             <td class="num"><?= number_format($detailQtyTotal, 0, ',', '.') ?></td>
                             <td class="num">-</td>
                             <td class="num">-</td>
@@ -1121,3 +1189,4 @@ initDetailSorting();
 </script>
 </body>
 </html>
+

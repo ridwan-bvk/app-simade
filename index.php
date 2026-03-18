@@ -126,12 +126,14 @@ foreach ($templateRows as $templateRow) {
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="assets/css/style.css">
-    <script src="https://unpkg.com/feather-icons"></script>
+    <script src="assets/js/feather-local.js"></script>
     <style>
         /* ── Layout Override: kasir lebih kecil, cart lebih lebar ── */
         .products-section {
             flex: 4 !important;
             order: 2;
+            min-width: 0;
+            min-height: 0;
         }
 
         .cart-section {
@@ -139,6 +141,8 @@ foreach ($templateRows as $templateRow) {
             min-width: 520px !important;
             max-width: 680px !important;
             order: 1;
+            min-height: 0;
+            overflow: hidden;
             border-left: none !important;
             border-right: 1px solid var(--border-color) !important;
             box-shadow: 4px 0 15px rgba(0, 0, 0, 0.02) !important;
@@ -188,9 +192,39 @@ foreach ($templateRows as $templateRow) {
             padding: 16px 24px !important;
         }
 
+        .cart-header-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .btn-icon-action {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            padding: 8px;
+            border-radius: var(--border-radius-sm);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s, color 0.2s;
+        }
+
+        .btn-icon-action:hover {
+            background-color: var(--bg-main);
+            color: var(--text-primary);
+        }
+
+        .btn-icon-action i {
+            width: 18px;
+            height: 18px;
+        }
+
         /* ── Cart items padding ── */
         .cart-items {
             padding: 16px 24px !important;
+            min-height: 0;
         }
 
         /* ── Summary compact ── */
@@ -213,6 +247,7 @@ foreach ($templateRows as $templateRow) {
         /* ── Payment Amount compact ── */
         .payment-input-group {
             margin-bottom: 10px !important;
+            display: none;
         }
 
         .input-lg {
@@ -225,6 +260,7 @@ foreach ($templateRows as $templateRow) {
             display: flex;
             gap: 10px;
             margin-top: 12px;
+            align-items: stretch;
         }
 
         .btn-checkout {
@@ -470,6 +506,239 @@ foreach ($templateRows as $templateRow) {
             padding: 8px 10px;
         }
 
+        .payment-method-summary {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 12px 14px;
+            border: 1px solid var(--border-color);
+            border-radius: 14px;
+            background: linear-gradient(135deg, #f8fafc 0%, #ffffff 100%);
+            margin-bottom: 12px;
+        }
+
+        .payment-method-meta {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            min-width: 0;
+            flex: 1;
+        }
+
+        .payment-method-label {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .payment-method-value {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .payment-method-note {
+            font-size: 12px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .btn-payment-config {
+            border: 1px solid #c7d2fe;
+            background: #eef2ff;
+            color: #3730a3;
+            border-radius: 10px;
+            padding: 10px 12px;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .payment-modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.58);
+            backdrop-filter: blur(5px);
+            z-index: 2100;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 18px;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.24s ease;
+        }
+
+        .payment-modal-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .payment-modal {
+            width: min(520px, 100%);
+            background: #fff;
+            border-radius: 22px;
+            border: 1px solid rgba(229, 231, 235, 0.9);
+            box-shadow: 0 24px 60px rgba(15, 23, 42, 0.18);
+            overflow: hidden;
+            transform: translateY(16px) scale(0.98);
+            transition: all 0.24s ease;
+        }
+
+        .payment-modal-overlay.active .payment-modal {
+            transform: translateY(0) scale(1);
+        }
+
+        .payment-modal-header {
+            padding: 20px 22px 14px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .payment-modal-title h3 {
+            font-size: 18px;
+            margin-bottom: 4px;
+        }
+
+        .payment-modal-title p {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .payment-modal-body {
+            padding: 18px 22px 22px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .payment-method-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .payment-method-card {
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 14px;
+            background: #fff;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            text-align: left;
+        }
+
+        .payment-method-card.active {
+            border-color: #6366f1;
+            background: linear-gradient(135deg, #eef2ff 0%, #ffffff 100%);
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+        }
+
+        .payment-method-card strong {
+            display: block;
+            font-size: 14px;
+            margin-bottom: 4px;
+        }
+
+        .payment-method-card span {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .payment-field-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .payment-field-group label {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .payment-field-group textarea,
+        .payment-field-group input {
+            width: 100%;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 12px 14px;
+            font-size: 14px;
+            outline: none;
+            transition: all 0.2s ease;
+            background: #fff;
+        }
+
+        .payment-field-group textarea {
+            min-height: 92px;
+            resize: vertical;
+        }
+
+        .payment-field-group textarea:focus,
+        .payment-field-group input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
+        }
+
+        .payment-modal-summary {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .payment-modal-stat {
+            border: 1px solid var(--border-color);
+            border-radius: 14px;
+            padding: 12px;
+            background: #f8fafc;
+        }
+
+        .payment-modal-stat span {
+            display: block;
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+        }
+
+        .payment-modal-stat strong {
+            font-size: 15px;
+        }
+
+        .payment-modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            padding-top: 4px;
+        }
+
+        .btn-modal-secondary {
+            border: 1px solid var(--border-color);
+            background: #fff;
+            color: var(--text-primary);
+            border-radius: 12px;
+            padding: 12px 14px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .checkout-inline-validation {
+            display: none;
+            border: 1px solid #fed7aa;
+            background: #fff7ed;
+            color: #9a3412;
+            border-radius: 12px;
+            padding: 10px 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
         .toast-wrap {
             position: fixed;
             top: 14px;
@@ -516,8 +785,99 @@ foreach ($templateRows as $templateRow) {
                 justify-content: flex-start;
             }
 
+            .cart-section {
+                min-width: 460px !important;
+                max-width: 560px !important;
+            }
+
             .products-grid {
                 grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+            }
+        }
+
+        @media (max-width: 1366px) and (orientation: landscape) {
+            .cart-section {
+                min-width: clamp(400px, 42vw, 520px) !important;
+                max-width: clamp(460px, 46vw, 560px) !important;
+            }
+
+            .cart-items {
+                padding: 14px 18px !important;
+            }
+
+            .cart-summary {
+                padding: 14px 18px !important;
+            }
+
+            .summary-row {
+                gap: 10px;
+                align-items: flex-start;
+            }
+
+            .summary-row > span:last-child {
+                display: flex;
+                flex-wrap: wrap;
+                justify-content: flex-end;
+                gap: 6px;
+            }
+
+            .checkout-row {
+                flex-wrap: wrap;
+            }
+
+            .btn-save-draft,
+            .btn-checkout,
+            .btn-print-receipt {
+                flex: 1 1 100%;
+                justify-content: center;
+            }
+        }
+
+        @media (max-width: 1366px) and (max-height: 900px) and (orientation: landscape) {
+            .cart-header,
+            .cart-customer,
+            .cart-items,
+            .cart-summary {
+                padding-left: 16px !important;
+                padding-right: 16px !important;
+            }
+
+            .cart-header {
+                padding-top: 14px !important;
+                padding-bottom: 14px !important;
+            }
+
+            .cart-customer {
+                padding-top: 10px;
+                padding-bottom: 10px;
+            }
+
+            .cart-items {
+                padding-top: 12px !important;
+                padding-bottom: 12px !important;
+                gap: 12px;
+            }
+
+            .cart-summary {
+                padding-top: 12px !important;
+                padding-bottom: 12px !important;
+            }
+
+            .payment-input-group {
+                margin-bottom: 8px !important;
+            }
+
+            .input-lg {
+                padding: 10px 12px !important;
+                font-size: 14px !important;
+            }
+
+            .btn-save-draft,
+            .btn-checkout,
+            .btn-print-receipt {
+                padding-top: 12px !important;
+                padding-bottom: 12px !important;
+                font-size: 13px !important;
             }
         }
 
@@ -529,6 +889,11 @@ foreach ($templateRows as $templateRow) {
             .cart-section {
                 min-width: 100% !important;
                 max-width: none !important;
+            }
+
+            .payment-method-grid,
+            .payment-modal-summary {
+                grid-template-columns: 1fr;
             }
         }
 
@@ -601,9 +966,9 @@ foreach ($templateRows as $templateRow) {
             <!-- Cart Header -->
             <header class="cart-header">
                 <h2>Keranjang <span style="font-size:11px;color:var(--text-muted);font-weight:600;">F9 transaksi baru</span></h2>
-                <div style="display:flex;gap:8px;align-items:center;">
-                    <button class="btn-secondary" id="newTransactionBtn" title="Mulai Transaksi Baru" style="padding:8px 10px;font-size:12px;">
-                        Baru
+                <div class="cart-header-actions">
+                    <button class="btn-icon-action" id="newTransactionBtn" title="Mulai Transaksi Baru" aria-label="Mulai Transaksi Baru">
+                        <i data-feather="plus-circle"></i>
                     </button>
                     <button class="btn-clear-cart" id="clearCartBtn" title="Kosongkan Keranjang">
                         <i data-feather="trash-2"></i>
@@ -657,8 +1022,17 @@ foreach ($templateRows as $templateRow) {
                 </div>
 
                 <div class="payment-input-group">
-                    <label for="paymentAmount" class="text-muted text-sm">Tunai Dibayar (Rp)</label>
+                    <label for="paymentAmount" class="text-muted text-sm" id="paymentAmountLabel">Nominal Dibayar (Rp)</label>
                     <input type="number" id="paymentAmount" class="input-lg" placeholder="Masukan nominal bayar">
+                </div>
+
+                <div class="payment-method-summary">
+                    <div class="payment-method-meta">
+                        <span class="payment-method-label">Metode Pembayaran</span>
+                        <span class="payment-method-value" id="paymentMethodLabel">Tunai</span>
+                        <span class="payment-method-note" id="paymentMethodNote">Belum ada keterangan pembayaran.</span>
+                    </div>
+                    <button type="button" class="btn-payment-config" id="openPaymentModalBtn">Atur Pembayaran</button>
                 </div>
 
                 <div class="summary-row change-row mt-3">
@@ -666,6 +1040,7 @@ foreach ($templateRows as $templateRow) {
                     <span class="font-bold text-rose" id="changeAmount">Rp 0</span>
                 </div>
                 <div id="variantValidationNotice" class="checkout-validation"></div>
+                <div id="checkoutValidationNotice" class="checkout-inline-validation"></div>
 
                 <div class="checkout-row">
                     <button class="btn-save-draft" id="saveDraftBtn" disabled>
@@ -713,6 +1088,61 @@ foreach ($templateRows as $templateRow) {
     <!-- Hidden print area -->
     <div id="printArea" class="hidden"></div>
     <div id="toastWrap" class="toast-wrap"></div>
+    <div class="payment-modal-overlay" id="paymentModal">
+        <div class="payment-modal">
+            <div class="payment-modal-header">
+                <div class="payment-modal-title">
+                    <h3>Metode Pembayaran</h3>
+                    <p>Pilih metode, isi nominal bayar, lalu tambahkan keterangan bila perlu.</p>
+                </div>
+                <button type="button" class="btn-modal-secondary" id="closePaymentModalBtn">Tutup</button>
+            </div>
+            <div class="payment-modal-body">
+                <div class="payment-method-grid">
+                    <button type="button" class="payment-method-card active" data-method="cash">
+                        <strong>Tunai</strong>
+                        <span>Pembayaran langsung di kasir dengan hitung kembalian otomatis.</span>
+                    </button>
+                    <button type="button" class="payment-method-card" data-method="transfer">
+                        <strong>Transfer Rek</strong>
+                        <span>Pembayaran non tunai seperti transfer bank atau rekening tujuan.</span>
+                    </button>
+                </div>
+                <div class="payment-field-group">
+                    <label for="paymentAmountModal">Nominal Dibayar</label>
+                    <input type="number" id="paymentAmountModal" placeholder="Masukkan nominal pembayaran">
+                </div>
+                <div class="payment-field-group">
+                    <label for="paymentNoteInput">Keterangan Pembayaran</label>
+                    <textarea id="paymentNoteInput" placeholder="Contoh: Tunai pecahan pas, Transfer BCA a.n. Asep, nomor referensi, atau catatan lain."></textarea>
+                </div>
+                <div id="paymentModalValidation" class="checkout-inline-validation"></div>
+                <div class="payment-modal-summary">
+                    <div class="payment-modal-stat">
+                        <span>Total Tagihan</span>
+                        <strong id="paymentModalTotal">Rp 0</strong>
+                    </div>
+                    <div class="payment-modal-stat">
+                        <span>Total Dibayar</span>
+                        <strong id="paymentModalPaid">Rp 0</strong>
+                    </div>
+                    <div class="payment-modal-stat">
+                        <span>Kembalian</span>
+                        <strong id="paymentModalChange">Rp 0</strong>
+                    </div>
+                </div>
+                <div class="payment-modal-actions">
+                    <button type="button" class="btn-modal-secondary" id="cancelPaymentModalBtn">Batal</button>
+                    <button type="button" class="btn-checkout" id="confirmCheckoutBtn">
+                        <div class="checkout-btn-content">
+                            <span>Konfirmasi Pembayaran</span>
+                            <span class="shortcut-hint-dark">Enter ↵</span>
+                        </div>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <script>
         feather.replace();

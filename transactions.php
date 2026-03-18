@@ -70,7 +70,7 @@ foreach ($templateRows as $templateRow) {
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="assets/css/style.css">
     <link rel="stylesheet" href="assets/css/products.css">
-    <script src="https://unpkg.com/feather-icons"></script>
+    <script src="assets/js/feather-local.js"></script>
     <style>
         .tx-toolbar {
             display: grid;
@@ -277,6 +277,75 @@ foreach ($templateRows as $templateRow) {
             font-weight: 600;
         }
 
+        .cancel-modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(17, 24, 39, 0.55);
+            z-index: 1200;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+        }
+
+        .cancel-modal.active {
+            display: flex;
+        }
+
+        .cancel-modal-card {
+            width: min(420px, 100%);
+            background: #fff;
+            border: 1px solid var(--border-color);
+            border-radius: 18px;
+            box-shadow: 0 20px 50px rgba(15, 23, 42, 0.16);
+            overflow: hidden;
+        }
+
+        .cancel-modal-head {
+            padding: 16px 18px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .cancel-modal-body {
+            padding: 18px;
+        }
+
+        .cancel-modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            margin-top: 14px;
+        }
+
+        .cancel-input {
+            width: 100%;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 11px 12px;
+            font-size: 14px;
+            outline: none;
+        }
+
+        .cancel-input:focus {
+            border-color: #6366f1;
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+        }
+
+        .cancel-validation {
+            display: none;
+            margin-top: 10px;
+            border: 1px solid #fecaca;
+            background: #fef2f2;
+            color: #991b1b;
+            border-radius: 10px;
+            padding: 9px 10px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
         .toast.success {
             border-color: #6ee7b7;
             background: #ecfdf5;
@@ -353,6 +422,7 @@ foreach ($templateRows as $templateRow) {
                                 <th>Diskon</th>
                                 <th>Uang Muka</th>
                                 <th>Sisa Bayar</th>
+                                <th>Metode</th>
                                 <th>Status</th>
                                 <th>Flag Cetak</th>
                                 <th>Aksi</th>
@@ -360,7 +430,7 @@ foreach ($templateRows as $templateRow) {
                         </thead>
                         <tbody id="txTbody">
                             <tr>
-                                <td colspan="11" style="text-align:center;color:var(--text-muted);">Memuat data...</td>
+                                <td colspan="12" style="text-align:center;color:var(--text-muted);">Memuat data...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -385,6 +455,23 @@ foreach ($templateRows as $templateRow) {
             <div class="tx-modal-body" id="txModalBody"></div>
         </div>
     </div>
+    <div class="cancel-modal" id="cancelPaidModal">
+        <div class="cancel-modal-card">
+            <div class="cancel-modal-head">
+                <strong>Batal Bayar</strong>
+                <button class="btn-link" type="button" onclick="closeCancelPaidModal()">Tutup</button>
+            </div>
+            <div class="cancel-modal-body">
+                <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;">Masukkan password login untuk mengubah transaksi sudah bayar menjadi belum bayar.</p>
+                <input type="password" id="cancelPaidPassword" class="cancel-input" placeholder="Masukkan password login">
+                <div id="cancelPaidValidation" class="cancel-validation"></div>
+                <div class="cancel-modal-actions">
+                    <button class="btn-link" type="button" onclick="closeCancelPaidModal()">Batal</button>
+                    <button class="btn-link btn-danger-lite" type="button" id="confirmCancelPaidBtn">Konfirmasi</button>
+                </div>
+            </div>
+        </div>
+    </div>
     <div id="printArea" class="hidden"></div>
     <div id="toastWrap" class="toast-wrap"></div>
 
@@ -403,6 +490,10 @@ foreach ($templateRows as $templateRow) {
         const txNext = document.getElementById('txNext');
         const txModal = document.getElementById('txModal');
         const txModalBody = document.getElementById('txModalBody');
+        const cancelPaidModal = document.getElementById('cancelPaidModal');
+        const cancelPaidPassword = document.getElementById('cancelPaidPassword');
+        const cancelPaidValidation = document.getElementById('cancelPaidValidation');
+        const confirmCancelPaidBtn = document.getElementById('confirmCancelPaidBtn');
         const printArea = document.getElementById('printArea');
         const toastWrap = document.getElementById('toastWrap');
         const receiptTemplate = (window.__RECEIPT_TEMPLATE__ && typeof window.__RECEIPT_TEMPLATE__ === 'object') ? window.__RECEIPT_TEMPLATE__ : {};
@@ -411,6 +502,7 @@ foreach ($templateRows as $templateRow) {
         let page = 1;
         let totalPages = 1;
         let searchDebounceTimer = null;
+        let activeCancelPaidId = 0;
 
         function formatRupiah(value) {
             return new Intl.NumberFormat('id-ID', {
@@ -430,6 +522,11 @@ foreach ($templateRows as $templateRow) {
                 div.style.transform = 'translateY(-4px)';
             }, 2600);
             setTimeout(() => div.remove(), 3200);
+        }
+
+        function setCancelValidation(message = '') {
+            cancelPaidValidation.textContent = message;
+            cancelPaidValidation.style.display = message ? 'block' : 'none';
         }
 
         function escHtml(value) {
@@ -467,12 +564,13 @@ foreach ($templateRows as $templateRow) {
             const yyyy = now.getFullYear();
             const mm = String(now.getMonth() + 1).padStart(2, '0');
             const dd = String(now.getDate()).padStart(2, '0');
+            const firstDayOfMonth = `${yyyy}-${mm}-01`;
             const today = `${yyyy}-${mm}-${dd}`;
-            txStartDate.value = today;
+            txStartDate.value = firstDayOfMonth;
             txEndDate.value = today;
         }
         async function loadTransactions() {
-            txTbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text-muted);">Memuat data...</td></tr>';
+            txTbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--text-muted);">Memuat data...</td></tr>';
             const params = new URLSearchParams({
                 action: 'list_today',
                 page: String(page),
@@ -485,7 +583,7 @@ foreach ($templateRows as $templateRow) {
             const res = await fetch(`checkout_actions.php?${params.toString()}`);
             const data = await res.json();
             if (!data.success) {
-                txTbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#b91c1c;">Gagal memuat data transaksi</td></tr>';
+                txTbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#b91c1c;">Gagal memuat data transaksi</td></tr>';
                 return;
             }
             const rows = data.transactions || [];
@@ -499,7 +597,7 @@ foreach ($templateRows as $templateRow) {
             txNext.disabled = page >= totalPages;
 
             if (!rows.length) {
-                txTbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text-muted);">Tidak ada data.</td></tr>';
+                txTbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--text-muted);">Tidak ada data.</td></tr>';
                 return;
             }
             txTbody.innerHTML = rows.map((row, idx) => `
@@ -512,12 +610,17 @@ foreach ($templateRows as $templateRow) {
             <td>${formatRupiah(row.discount || 0)}</td>
             <td>${formatRupiah(row.downpayment || 0)}</td>
             <td>${formatRupiah((row.subtotal || 0) - (row.discount || 0) - (row.downpayment || 0))}</td>
+            <td>
+                <div>${row.payment_method === 'transfer' ? 'Transfer Rek' : 'Tunai'}</div>
+                <div style="font-size:11px;color:var(--text-muted);">${row.payment_note ? escHtml(row.payment_note) : (Number(row.is_non_cash) === 1 ? 'Non tunai' : 'Tunai')}</div>
+            </td>
             <td><span class="badge ${row.status}">${row.status === 'paid' ? 'Sudah Bayar' : 'Belum Bayar'}</span></td>
             <td><span class="badge ${Number(row.is_printed) === 1 ? 'paid' : 'pending'}">${Number(row.is_printed) === 1 ? 'Sudah Cetak' : 'Belum Cetak'}</span></td>
             <td style="display:flex;gap:6px;flex-wrap:wrap;">
                 <button class="btn-link btn-detail" onclick="openTxDetail(${row.id})">Detail</button>
                 <button class="btn-link btn-nota" onclick="printTxNota(${row.id})">Cetak Nota</button>
                 <button class="btn-link btn-kwitansi" onclick="printTxKwitansi(${row.id})">Cetak Kwitansi</button>
+                ${row.status === 'paid' ? `<button class="btn-link btn-danger-lite" onclick="openCancelPaidModal(${row.id})">Batal Bayar</button>` : ''}
                 ${row.status === 'pending' ? `<a class="btn-link btn-continue" href="index.php?draft_id=${row.id}">Lanjutkan</a>` : ''}
                 <button class="btn-link btn-danger-lite" onclick="deleteTx(${row.id})" ${(row.status === 'pending' && Number(row.is_printed) === 0) ? '' : 'disabled'}>Delete</button>
             </td>
@@ -543,6 +646,8 @@ foreach ($templateRows as $templateRow) {
             <div style="border:1px solid var(--border-color);border-radius:10px;padding:10px;background:#f8fafc;"><div style="font-size:11px;color:var(--text-muted);">Waktu</div><div style="font-weight:700;">${escHtml(tx.transaction_at || '-')}</div></div>
             <div style="border:1px solid var(--border-color);border-radius:10px;padding:10px;background:#f8fafc;"><div style="font-size:11px;color:var(--text-muted);">Diskon</div><div style="font-weight:700;">${formatRupiah(tx.discount || 0)}</div></div>
             <div style="border:1px solid var(--border-color);border-radius:10px;padding:10px;background:#f8fafc;"><div style="font-size:11px;color:var(--text-muted);">Uang Muka</div><div style="font-weight:700;">${formatRupiah(tx.downpayment || 0)}</div></div>
+            <div style="border:1px solid var(--border-color);border-radius:10px;padding:10px;background:#f8fafc;"><div style="font-size:11px;color:var(--text-muted);">Metode Bayar</div><div style="font-weight:700;">${tx.payment_method === 'transfer' ? 'Transfer Rek' : 'Tunai'}</div></div>
+            <div style="border:1px solid var(--border-color);border-radius:10px;padding:10px;background:#f8fafc;"><div style="font-size:11px;color:var(--text-muted);">Keterangan</div><div style="font-weight:700;">${escHtml(tx.payment_note || '-')}</div></div>
         </div>
         <table class="tx-table">
             <thead><tr><th>Produk</th><th>Varian</th><th>Harga</th><th>Qty</th><th>Subtotal</th></tr></thead>
@@ -569,6 +674,22 @@ foreach ($templateRows as $templateRow) {
             txModal.classList.remove('active');
         };
 
+        window.openCancelPaidModal = function(id) {
+            activeCancelPaidId = Number(id || 0);
+            if (!activeCancelPaidId) return;
+            cancelPaidPassword.value = '';
+            setCancelValidation('');
+            cancelPaidModal.classList.add('active');
+            setTimeout(() => cancelPaidPassword.focus(), 60);
+        };
+
+        window.closeCancelPaidModal = function() {
+            activeCancelPaidId = 0;
+            cancelPaidPassword.value = '';
+            setCancelValidation('');
+            cancelPaidModal.classList.remove('active');
+        };
+
         function buildPrintableNote(tx, items) {
             const itemRows = buildItemsRows(items);
             const storeName = receiptTemplate.store_name || 'Toko POS Kita';
@@ -584,6 +705,7 @@ foreach ($templateRows as $templateRow) {
                 const discountVal = Number(tx.discount || 0);
                 const dpVal = Number(tx.downpayment || 0);
                 const sisaBayar = Math.max(0, subtotal - discountVal - dpVal);
+                const paymentMethodLabel = tx.payment_method === 'transfer' ? 'Transfer Rek' : 'Tunai';
                 return applyPrintTemplate(printTemplates.nota, {
                     store_name: escHtml(storeName),
                     store_address: escHtml(storeAddress),
@@ -602,6 +724,8 @@ foreach ($templateRows as $templateRow) {
                     sisa_bayar: escHtml(formatRupiah(sisaBayar)),
                     paid_amount: escHtml(formatRupiah(tx.paid_amount || 0)),
                     change_amount: escHtml(formatRupiah(tx.change_amount || 0)),
+                    payment_method: escHtml(paymentMethodLabel),
+                    payment_note: escHtml(tx.payment_note || ''),
                     status: escHtml(statusText),
                     footer_text: escHtml(footerText),
                 });
@@ -654,8 +778,9 @@ foreach ($templateRows as $templateRow) {
                 <span>Sisa Bayar</span><span>${formatRupiah(Math.max(0, Number(tx.subtotal || 0) - Number(tx.discount || 0) - Number(tx.downpayment || 0)))}</span>
             </div>
             <div style="display:flex;justify-content:space-between;font-size:12px;">
-                <span>Bayar</span><span>${formatRupiah(tx.paid_amount)}</span>
+                <span>${tx.payment_method === 'transfer' ? 'Transfer Rek' : 'Tunai'}</span><span>${formatRupiah(tx.paid_amount)}</span>
             </div>
+            ${tx.payment_note ? `<div style="font-size:11px;color:#555;">Ket: ${escHtml(tx.payment_note)}</div>` : ''}
             <div style="display:flex;justify-content:space-between;font-size:12px;">
                 <span>Kembalian</span><span>${formatRupiah(tx.change_amount)}</span>
             </div>
@@ -693,6 +818,8 @@ foreach ($templateRows as $templateRow) {
                     downpayment: escHtml(formatRupiah(tx.downpayment || 0)),
                     paid_amount: escHtml(formatRupiah(tx.paid_amount || 0)),
                     change_amount: escHtml(formatRupiah(tx.change_amount || 0)),
+                    payment_method: escHtml(tx.payment_method === 'transfer' ? 'Transfer Rek' : 'Tunai'),
+                    payment_note: escHtml(tx.payment_note || ''),
                     status: escHtml(statusText),
                     footer_text: escHtml(footerText),
                 });
@@ -711,6 +838,8 @@ foreach ($templateRows as $templateRow) {
                 <tr><td style="width:140px;">Total</td><td>: ${formatRupiah(tx.total || 0)}</td></tr>
                 <tr><td>Diskon</td><td>: ${formatRupiah(tx.discount || 0)}</td></tr>
                 <tr><td>Uang Muka</td><td>: ${formatRupiah(tx.downpayment || 0)}</td></tr>
+                <tr><td>Metode Bayar</td><td>: ${escHtml(tx.payment_method === 'transfer' ? 'Transfer Rek' : 'Tunai')}</td></tr>
+                <tr><td>Keterangan</td><td>: ${escHtml(tx.payment_note || '-')}</td></tr>
                 <tr><td>Status</td><td>: ${statusText}</td></tr>
                 <tr><td>Rekening</td><td>: ${escHtml(bankAccount || '-')}</td></tr>
             </table>
@@ -810,6 +939,40 @@ foreach ($templateRows as $templateRow) {
                 showToast(err.message, 'error');
             }
         };
+        async function submitCancelPaid() {
+            if (!activeCancelPaidId) return;
+            const password = (cancelPaidPassword.value || '').trim();
+            if (!password) {
+                setCancelValidation('Password login wajib diisi.');
+                return;
+            }
+            const original = confirmCancelPaidBtn.textContent;
+            confirmCancelPaidBtn.disabled = true;
+            confirmCancelPaidBtn.textContent = 'Memproses...';
+            try {
+                const res = await fetch('checkout_actions.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        action: 'cancel_paid',
+                        transaction_id: activeCancelPaidId,
+                        password
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok || !data.success) throw new Error(data.message || 'Gagal membatalkan status bayar');
+                closeCancelPaidModal();
+                await loadTransactions();
+                showToast('Status transaksi berhasil diubah menjadi belum bayar.', 'success');
+            } catch (err) {
+                setCancelValidation(err.message || 'Gagal membatalkan pembayaran.');
+            } finally {
+                confirmCancelPaidBtn.disabled = false;
+                confirmCancelPaidBtn.textContent = original;
+            }
+        }
         function reloadFromFirstPage() {
             page = 1;
             loadTransactions();
@@ -854,6 +1017,27 @@ foreach ($templateRows as $templateRow) {
                 reloadFromFirstPage();
             }
         });
+        if (confirmCancelPaidBtn) {
+            confirmCancelPaidBtn.addEventListener('click', submitCancelPaid);
+        }
+        if (cancelPaidPassword) {
+            cancelPaidPassword.addEventListener('input', () => {
+                setCancelValidation('');
+            });
+            cancelPaidPassword.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    submitCancelPaid();
+                }
+            });
+        }
+        if (cancelPaidModal) {
+            cancelPaidModal.addEventListener('click', (e) => {
+                if (e.target === cancelPaidModal) {
+                    closeCancelPaidModal();
+                }
+            });
+        }
         setToday();
         loadTransactions();
     </script>
